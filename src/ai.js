@@ -7,11 +7,19 @@ import { getActiveZombies } from './zombie.js'
 const ZOMBIE_ALERT_RADIUS_SQ = 11 * 11   // 殭屍在 AI 對手附近這個距離內，就不蓄力發弓
 const _aiEyePos = new THREE.Vector3()
 
-// 難度預設：瞄準誤差、蓄力時間範圍、出手間隔、瞄準要害的偏好程度
+// AI 對手整體命中機率固定在 1/10：每次拉弓先擲骰決定這一箭是不是「真的瞄準」的那 1/10，
+// 是的話用很小的誤差（幾乎一定會中），不是的話直接加一個保證偏出目標範圍的角度，而不是
+// 沿用舊版「疊加連續隨機誤差」的做法——那種做法命中率會隨距離/難度飄動，沒辦法保證固定比例
+const HIT_CHANCE = 0.1
+const TRUE_AIM_ERROR = 0.03   // 命中那 1/10 用的極小誤差
+const MISS_ERROR_MIN = 0.35   // 保證偏出目標範圍的誤差下限
+const MISS_ERROR_MAX = 0.6
+
+// 難度預設：蓄力時間範圍、出手間隔、瞄準要害的偏好程度（命中率統一由上面的 HIT_CHANCE 控制，不分難度）
 const DIFFICULTY = {
-  easy:   { aimError: 0.30, chargeMin: 2.5, chargeMax: 3.5, restMin: 0.8, restMax: 1.6, centerBias: 0.06 },
-  normal: { aimError: 0.16, chargeMin: 0.55, chargeMax: 0.95, restMin: 0.5, restMax: 1.0, centerBias: 0.25 },
-  hard:   { aimError: 0.07, chargeMin: 0.7, chargeMax: 1.0, restMin: 0.3, restMax: 0.7, centerBias: 0.5 },
+  easy:   { chargeMin: 2.5, chargeMax: 3.5, restMin: 0.8, restMax: 1.6, centerBias: 0.06 },
+  normal: { chargeMin: 0.55, chargeMax: 0.95, restMin: 0.5, restMax: 1.0, centerBias: 0.25 },
+  hard:   { chargeMin: 0.7, chargeMax: 1.0, restMin: 0.3, restMax: 0.7, centerBias: 0.5 },
 }
 
 const STATE = { IDLE: 'idle', DRAWING: 'drawing', COOLDOWN: 'cooldown' }
@@ -118,11 +126,19 @@ export class AIController {
       dir.y = Math.sin(pitch)
     }
 
-    // 每次拉弓只擲骰一次瞄準誤差（不連續抖動），依難度扭一點角度，讀起來像刻意瞄準而不是手抖
-    const err = this.cfg.aimError
-    dir.x += (Math.random() - 0.5) * 2 * err
-    dir.y += (Math.random() - 0.5) * 2 * err
-    dir.z += (Math.random() - 0.5) * 2 * err
+    // 每次拉弓只擲骰一次（不連續抖動），決定這一箭是命中機率 1/10 裡「真的瞄準」的那次，
+    // 還是刻意偏出去的那 9/10；同一箭全程用同一組誤差，讀起來像刻意瞄準/失手而不是手抖
+    if (Math.random() < HIT_CHANCE) {
+      dir.x += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
+      dir.y += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
+      dir.z += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
+    } else {
+      const missErr = randRange(MISS_ERROR_MIN, MISS_ERROR_MAX)
+      const missAngle = Math.random() * Math.PI * 2
+      dir.x += Math.cos(missAngle) * missErr
+      dir.y += (Math.random() - 0.5) * missErr
+      dir.z += Math.sin(missAngle) * missErr
+    }
     dir.normalize()
     this.dir.copy(dir)
 
