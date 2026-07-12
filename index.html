@@ -66,15 +66,15 @@
     #stats-label.hidden { display: none; }
     kbd { background: #eee; border-radius: 5px; padding: 1px 7px; font-family: monospace; color: #333; }
 
-    /* 手機專用操作鈕：蓄力發射鈕（左）＋望遠鈕（右），並排放在血量條上方一點點，
-       方便雙手拇指分別操作——左手按住蓄力鈕蓄力/放開發射，右手拖曳畫面瞄準、或按右邊望遠鈕 */
-    #charge-btn, #zoom-btn { position: fixed; bottom: 100px; z-index: 6;
+    /* 手機專用操作鈕：蓄力發射鈕＋望遠鈕，兩顆貼在一起放畫面右側直排，方便同一根拇指
+       就能兩顆都按到——蓄力鈕在下（比較常用、拇指自然落點），望遠鈕在上 */
+    #charge-btn, #zoom-btn { position: fixed; right: 18px; z-index: 6;
       width: 64px; height: 64px; border-radius: 50%; padding: 0;
       display: flex; align-items: center; justify-content: center; font-size: 28px;
       background: rgba(0,0,0,.4); box-shadow: 0 0 0 2px rgba(255,255,255,.35), 0 4px 10px rgba(0,0,0,.35);
       touch-action: none; -webkit-user-select: none; user-select: none; }
-    #charge-btn { left: calc(50% - 150px); }
-    #zoom-btn { left: calc(50% + 150px - 64px); }
+    #charge-btn { bottom: 100px; }
+    #zoom-btn { bottom: 172px; }
     #charge-btn.active, #zoom-btn.active { background: rgba(255,154,61,.55); box-shadow: 0 0 0 2px rgba(255,255,255,.7), 0 4px 10px rgba(0,0,0,.35); }
     #charge-btn.hidden, #zoom-btn.hidden { display: none; }
 
