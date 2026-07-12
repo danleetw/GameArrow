@@ -6,12 +6,17 @@ import { getWindAngle, getWindSpeed } from './wind.js'
 //  全部程序化生成，不依賴外部素材。對戰走廊（雙方站位/箭矢飛行的走道）
 //  強制維持 y=0 完全平坦，因為 arrow.js 的落地判定是寫死 GROUND_Y=0，
 //  場景佈置只能動走廊「外面」的地形，避免破壞箭矢物理。
+//
+//  關卡系統：buildEnvironment(scene, renderer, duelDistance, level) 依 level（1~10）
+//  從 THEMES 挑一套配色/密度/特殊道具佈置場景，換關時 clearEnvironment() 會先把上一關
+//  的場地物件全部移除並釋放記憶體，才不會越玩物件越堆越多。
 // ============================================================
 
 const swayables = []   // { group, phase, freq, amp }：樹木/草叢，每幀依風向風速搖晃
 let swayT = 0
-const treeTops = []    // { x, y, z }：每棵樹概略的樹梢世界座標，供 birds.js 挑選停棲點
+const treeTops = []    // { x, y, z }：每棵樹（含水晶叢）概略的樹梢世界座標，供 birds.js 挑選停棲點
 const obstacleSpots = []   // { x, z, r }：樹木/石頭的概略碰撞圓，供 zombie.js 繞路判斷
+const sceneObjects = []   // 這關加進 scene 的所有頂層物件，換關時用來整批移除＋釋放資源
 
 // ---- 雲：分幾個高度層，越高飄越快，沿風向漂移，飄出範圍就傳送到對面繼續飄 ----
 const CLOUD_LAYERS = [
@@ -23,7 +28,7 @@ const CLOUD_BOUND = 150
 const CLOUD_SPEED = 1.4
 const clouds = []   // { group, speedMul }
 
-// ---- 固定種子亂數，讓場景佈置每次重整都一樣，方便邊調邊看 ----
+// ---- 可重新播種的亂數：每關用不同種子，讓每個關卡的樹木/石頭佈置固定但彼此不同 ----
 function mulberry32(seed) {
   return function () {
     seed |= 0; seed = (seed + 0x6D2B79F5) | 0
@@ -32,7 +37,7 @@ function mulberry32(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 }
-const rand = mulberry32(20260712)
+let rand = mulberry32(20260712)
 
 // ---- 簡易 2D 值噪聲（fBm），純函式不依賴外部函式庫 ----
 function hash2(x, y) {
@@ -53,13 +58,123 @@ function fbm(x, y, octaves = 4) {
 }
 const smoothstep = (t) => { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t) }
 
+// ============================================================
+//  關卡主題：10 關由淺入深——森林 → 秋楓 → 雪原 → 荒漠 → 熔岩 → 櫻花 → 沼澤 → 極光雪峰
+//  → 水晶秘境 → 終焉競技場。越高關越華麗（發光道具、更密的植被、專屬造景），
+//  第 1 關維持跟原本一模一樣的種子與配色，畫面完全不變。
+// ============================================================
+export const LEVEL_COUNT = 10
+const THEMES = [
+  null, // index 0 不用，關卡從 1 開始
+  { // Lv1 翠綠森林
+    name: '翠綠森林', seed: 20260712,
+    ground: ['#7a9a4e', 'rgba(160,190,110,0.30)', 'rgba(60,90,40,0.28)'],
+    trunk: 0x5c4326, pineTrunk: 0x4a3420, foliage: 0x3d7a34, pineFoliage: 0x2d5c33,
+    rock: 0x8a8478, grass: 0x5fae3f, water: 0x3f7ea8,
+    treeCount: 20, rockClusterCount: 8, grassCount: 30, treeMode: 'normal',
+  },
+  { // Lv2 楓紅秋林
+    name: '楓紅秋林', seed: 20260713,
+    ground: ['#8a6a3a', 'rgba(224,140,54,0.32)', 'rgba(150,60,24,0.28)'],
+    trunk: 0x5c4326, pineTrunk: 0x4a3420, foliage: 0xd2691e, pineFoliage: 0x8a5a1e,
+    rock: 0x9a7a5a, grass: 0xc9962f, water: 0x4f8ea8,
+    treeCount: 22, rockClusterCount: 8, grassCount: 28, treeMode: 'normal',
+  },
+  { // Lv3 銀白雪原
+    name: '銀白雪原', seed: 20260714,
+    ground: ['#dfe6ec', 'rgba(255,255,255,0.40)', 'rgba(180,200,220,0.30)'],
+    trunk: 0x4a3a2c, pineTrunk: 0x3a2e22, foliage: 0xcfe0e8, pineFoliage: 0x28503e,
+    rock: 0xb8c4cc, grass: 0xd8e4ea, water: 0x6fb8d8,
+    treeCount: 20, rockClusterCount: 9, grassCount: 20, treeMode: 'normal',
+  },
+  { // Lv4 荒漠峽谷
+    name: '荒漠峽谷', seed: 20260715,
+    ground: ['#c9a15a', 'rgba(224,180,110,0.30)', 'rgba(150,100,50,0.28)'],
+    trunk: 0x5a4020, pineTrunk: 0x5a4020, foliage: 0x6a8a3a, pineFoliage: 0x5a7a2a,
+    rock: 0xa85a3a, grass: 0x8a7a3a, water: 0x3a9a8a,
+    treeCount: 10, rockClusterCount: 12, grassCount: 15, treeMode: 'normal', extra: 'cactus',
+  },
+  { // Lv5 熔岩地獄
+    name: '熔岩地獄', seed: 20260716,
+    ground: ['#3a2a28', 'rgba(120,40,20,0.35)', 'rgba(20,10,10,0.30)'],
+    trunk: 0x2a1e18, pineTrunk: 0x2a1e18, foliage: 0x3a2822, pineFoliage: 0x2a1e18,
+    rock: 0x4a2a1e, rockEmissive: 0xaa3300, grass: 0x5a2a18, grassEmissive: 0x882200,
+    water: 0xb8441a,
+    treeCount: 8, rockClusterCount: 14, grassCount: 18, treeMode: 'normal', extra: 'embers',
+  },
+  { // Lv6 粉櫻樂園
+    name: '粉櫻樂園', seed: 20260717,
+    ground: ['#8fae5a', 'rgba(255,200,220,0.30)', 'rgba(120,170,90,0.25)'],
+    trunk: 0x6a4a3a, pineTrunk: 0x5c4326, foliage: 0xf4a8c4, pineFoliage: 0x3d7a34,
+    rock: 0x9a9488, grass: 0x6fbf4f, water: 0x5aa8c8,
+    treeCount: 24, rockClusterCount: 6, grassCount: 34, treeMode: 'normal',
+  },
+  { // Lv7 迷霧沼澤
+    name: '迷霧沼澤', seed: 20260718,
+    ground: ['#4a5a3a', 'rgba(90,110,60,0.30)', 'rgba(30,40,20,0.32)'],
+    trunk: 0x3a3226, pineTrunk: 0x2e281e, foliage: 0x4a5a2a, pineFoliage: 0x3a4a22,
+    rock: 0x5a5a48, grass: 0x6a8a3a, grassEmissive: 0x2a6a3a, water: 0x3a4a2a,
+    treeCount: 26, rockClusterCount: 6, grassCount: 36, treeMode: 'normal', extra: 'mushrooms',
+  },
+  { // Lv8 極光雪峰
+    name: '極光雪峰', seed: 20260719,
+    ground: ['#5a6a8a', 'rgba(140,160,220,0.32)', 'rgba(60,50,120,0.28)'],
+    trunk: 0x3a3a4a, pineTrunk: 0x2e2e3e, foliage: 0x7a8ac8, pineFoliage: 0x4a5a9a,
+    rock: 0x8a94b8, rockEmissive: 0x4444aa, grass: 0x6a7ab8, water: 0x4a6ab8,
+    treeCount: 18, rockClusterCount: 10, grassCount: 22, treeMode: 'normal',
+  },
+  { // Lv9 水晶秘境
+    name: '水晶秘境', seed: 20260720,
+    ground: ['#2a2438', 'rgba(140,90,220,0.32)', 'rgba(60,30,90,0.30)'],
+    crystalColors: [0x9a4fe8, 0x4fc8e8, 0xe84f9a],
+    rock: 0x6a3a9a, rockEmissive: 0x8844cc, grass: 0x7a4ac0, grassEmissive: 0x9a5ae0,
+    water: 0x5a2a8a,
+    treeCount: 22, rockClusterCount: 10, grassCount: 26, treeMode: 'crystal',
+  },
+  { // Lv10 終焉競技場
+    name: '終焉競技場', seed: 20260721,
+    ground: ['#1a1414', 'rgba(200,40,20,0.35)', 'rgba(10,5,5,0.30)'],
+    trunk: 0x1a1414, pineTrunk: 0x1a1414, foliage: 0x2a1010, pineFoliage: 0x1a0808,
+    rock: 0x2a1818, rockEmissive: 0xdd2200, grass: 0x3a1414, grassEmissive: 0xaa2200,
+    water: 0xdd3300,
+    treeCount: 10, rockClusterCount: 16, grassCount: 20, treeMode: 'normal', extra: 'braziers',
+  },
+]
+
+export function getTheme(level) {
+  return THEMES[Math.max(1, Math.min(LEVEL_COUNT, level))]
+}
+
 // ---- 場地佈局：對戰走廊 + 湖泊 + 河流路徑（座標都在走廊外，安全不重疊）----
 const CORRIDOR_HALF_W = 4.2
 let corridorHalfLen = 12
 let archerZ = 12.5              // 雙方站位的 z 座標（絕對值），依 duelDistance/2 算出
 const MIN_ZOMBIE_SPAWN_DIST = 12   // 殭屍生成點離任一方站位至少要這麼遠，避免一出生就貼在人旁邊
-const LAKE = { cx: -18, cz: 4, rx: 9, rz: 6.5 }
-const RIVER = { points: [[26, -85], [20, -45], [16, -16], [12, -6], [15, 4], [10, 14], [13, 22], [16, 45], [22, 85]], width: 4.5 }
+// Level 1 固定用這組（跟原本一模一樣）；Level 2 以後每關重新隨機產生一組不同的湖泊/河流，
+// 見 buildEnvironment() 開頭的重新指派，湖泊固定在走廊左側（負 X）、河流固定在右側（正 X，
+// 跟觀戰高台同側但保留安全間距），跟原本場地佈局的安全假設一致，只是形狀/位置/流向換了
+const LEVEL1_LAKE = { cx: -18, cz: 4, rx: 9, rz: 6.5 }
+const LEVEL1_RIVER = { points: [[26, -85], [20, -45], [16, -16], [12, -6], [15, 4], [10, 14], [13, 22], [16, 45], [22, 85]], width: 4.5 }
+let LAKE = LEVEL1_LAKE
+let RIVER = LEVEL1_RIVER
+export const WATER_SURFACE_Y = 0.03
+
+function generateLake(rand) {
+  const rx = 5 + rand() * 6   // 5~11
+  const rz = 4 + rand() * 5   // 4~9
+  const cx = -(CORRIDOR_HALF_W + rx + 4 + rand() * 12)   // 固定在走廊左側，保證離走廊夠遠
+  const cz = (rand() * 2 - 1) * 35
+  return { cx, cz, rx, rz }
+}
+
+function generateRiver(rand) {
+  const width = 3.5 + rand() * 2.5   // 3.5~6
+  const baseX = 14 + rand() * 8       // 14~22，固定在走廊右側，跟原本的安全間距一致
+  const wobble = 2 + rand() * 3       // 2~5，河流蜿蜒幅度
+  const zs = [-85, -45, -16, -6, 4, 14, 22, 45, 85]
+  const points = zs.map((z) => [Math.max(10, baseX + (rand() - 0.5) * 2 * wobble), z])
+  return { points, width }
+}
 
 function isInCorridor(x, z) {
   return Math.abs(x) < CORRIDOR_HALF_W && Math.abs(z) < corridorHalfLen
@@ -95,6 +210,7 @@ function terrainHeight(x, z) {
 }
 
 let platformSpots = []   // {x, z, r}：觀戰高台位置，依 duelDistance 算出，避免樹木長到高台上
+let opponentStandY = 0   // Level 3 專用：對手站的矮台頂面高度，其餘關卡是 0（站地面）
 function isFreeSpot(x, z) {
   if (isInCorridor(x, z)) return false
   if (distToLake(x, z) < 1.4) return false
@@ -114,13 +230,20 @@ function pickSpot(rangeX, rangeZ, tries = 30) {
   return null
 }
 
-function buildGroundTexture(renderer) {
+function track(scene, obj) {
+  scene.add(obj)
+  sceneObjects.push(obj)
+  return obj
+}
+
+function buildGroundTexture(renderer, theme) {
   const s = 256, c = document.createElement('canvas'); c.width = c.height = s
   const ctx = c.getContext('2d')
-  ctx.fillStyle = '#7a9a4e'; ctx.fillRect(0, 0, s, s)
+  const [base, speckA, speckB] = theme.ground
+  ctx.fillStyle = base; ctx.fillRect(0, 0, s, s)
   for (let i = 0; i < 2200; i++) {
     const x = Math.random() * s, y = Math.random() * s
-    ctx.fillStyle = Math.random() < 0.5 ? 'rgba(160,190,110,0.30)' : 'rgba(60,90,40,0.28)'
+    ctx.fillStyle = Math.random() < 0.5 ? speckA : speckB
     ctx.fillRect(x, y, 2, 2)
   }
   const tex = new THREE.CanvasTexture(c)
@@ -131,7 +254,7 @@ function buildGroundTexture(renderer) {
   return tex
 }
 
-function buildGround(scene, renderer) {
+function buildGround(scene, renderer, theme) {
   const size = 160, seg = 100
   const geo = new THREE.PlaneGeometry(size, size, seg, seg)
   const pos = geo.attributes.position
@@ -140,20 +263,20 @@ function buildGround(scene, renderer) {
     pos.setZ(i, terrainHeight(lx, -ly))
   }
   geo.computeVertexNormals()
-  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: buildGroundTexture(renderer), roughness: 1 }))
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: buildGroundTexture(renderer, theme), roughness: 1 }))
   mesh.rotation.x = -Math.PI / 2
   mesh.receiveShadow = true
-  scene.add(mesh)
+  track(scene, mesh)
 }
 
-function buildWater(scene) {
-  const waterMat = new THREE.MeshStandardMaterial({ color: 0x3f7ea8, roughness: 0.25, metalness: 0.15, transparent: true, opacity: 0.88 })
+function buildWater(scene, theme) {
+  const waterMat = new THREE.MeshStandardMaterial({ color: theme.water, roughness: 0.25, metalness: 0.15, transparent: true, opacity: 0.88 })
   const lakeGeo = new THREE.CircleGeometry(1, 48)
   lakeGeo.scale(LAKE.rx, LAKE.rz, 1)
   const lake = new THREE.Mesh(lakeGeo, waterMat)
   lake.rotation.x = -Math.PI / 2
-  lake.position.set(LAKE.cx, 0.03, LAKE.cz)
-  scene.add(lake)
+  lake.position.set(LAKE.cx, WATER_SURFACE_Y, LAKE.cz)
+  track(scene, lake)
 
   // 河流：沿路徑點串出一連串重疊的水面色塊，避免用複雜曲線幾何
   for (let i = 0; i < RIVER.points.length - 1; i++) {
@@ -163,23 +286,22 @@ function buildWater(scene) {
     const seg = new THREE.Mesh(new THREE.PlaneGeometry(RIVER.width, len + RIVER.width * 0.6), waterMat)
     seg.rotation.x = -Math.PI / 2
     seg.rotation.z = -Math.atan2(dz, dx) + Math.PI / 2
-    seg.position.set((x1 + x2) / 2, 0.03, (z1 + z2) / 2)
-    scene.add(seg)
+    seg.position.set((x1 + x2) / 2, WATER_SURFACE_Y, (z1 + z2) / 2)
+    track(scene, seg)
   }
-  return waterMat
 }
 
-function buildRoundTree() {
+function buildRoundTree(theme) {
   const g = new THREE.Group()
   const trunkH = 1.6 + rand() * 0.6
   const trunk = new THREE.Mesh(
     new THREE.CylinderGeometry(0.13, 0.18, trunkH, 6),
-    new THREE.MeshStandardMaterial({ color: 0x5c4326, roughness: 0.9 })
+    new THREE.MeshStandardMaterial({ color: theme.trunk, roughness: 0.9 })
   )
   trunk.position.y = trunkH / 2
   trunk.castShadow = true
   g.add(trunk)
-  const foliageMat = new THREE.MeshStandardMaterial({ color: 0x3d7a34, roughness: 0.85 })
+  const foliageMat = new THREE.MeshStandardMaterial({ color: theme.foliage, roughness: 0.85 })
   const clumps = 3 + Math.floor(rand() * 2)
   for (let i = 0; i < clumps; i++) {
     const r = 0.9 + rand() * 0.5
@@ -192,17 +314,17 @@ function buildRoundTree() {
   return g
 }
 
-function buildPineTree() {
+function buildPineTree(theme) {
   const g = new THREE.Group()
   const trunkH = 1.2 + rand() * 0.4
   const trunk = new THREE.Mesh(
     new THREE.CylinderGeometry(0.12, 0.16, trunkH, 6),
-    new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.9 })
+    new THREE.MeshStandardMaterial({ color: theme.pineTrunk, roughness: 0.9 })
   )
   trunk.position.y = trunkH / 2
   trunk.castShadow = true
   g.add(trunk)
-  const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2d5c33, roughness: 0.85 })
+  const foliageMat = new THREE.MeshStandardMaterial({ color: theme.pineFoliage, roughness: 0.85 })
   let y = trunkH * 0.5
   for (let i = 0; i < 3; i++) {
     const h = 1.5 - i * 0.35, r = 1.0 - i * 0.25
@@ -216,21 +338,46 @@ function buildPineTree() {
   return g
 }
 
-function buildRock() {
+// Lv9 水晶秘境專用：拿一叢會發光的水晶尖柱取代樹木，站位效果（樹梢座標/碰撞圓）跟一般樹一樣，
+// 鳥照樣能停在上面
+function buildCrystalCluster(theme) {
+  const g = new THREE.Group()
+  const colors = theme.crystalColors
+  const spikes = 3 + Math.floor(rand() * 3)
+  let maxTop = 0
+  for (let i = 0; i < spikes; i++) {
+    const color = colors[Math.floor(rand() * colors.length)]
+    const h = 1.4 + rand() * 1.8
+    const r = 0.16 + rand() * 0.14
+    const mat = new THREE.MeshStandardMaterial({
+      color, roughness: 0.25, metalness: 0.1, emissive: color, emissiveIntensity: 0.55, flatShading: true,
+    })
+    const m = new THREE.Mesh(new THREE.ConeGeometry(r, h, 5), mat)
+    m.position.set((rand() - 0.5) * 0.9, h / 2, (rand() - 0.5) * 0.9)
+    m.rotation.set((rand() - 0.5) * 0.3, rand() * Math.PI * 2, (rand() - 0.5) * 0.3)
+    m.castShadow = true
+    g.add(m)
+    maxTop = Math.max(maxTop, m.position.y + h / 2)
+  }
+  g.userData.topY = maxTop + 0.3
+  return g
+}
+
+function buildRock(theme) {
   const s = 0.35 + rand() * 0.5
-  const m = new THREE.Mesh(
-    new THREE.DodecahedronGeometry(s, 0),
-    new THREE.MeshStandardMaterial({ color: 0x8a8478, roughness: 0.95, flatShading: true })
-  )
+  const mat = new THREE.MeshStandardMaterial({ color: theme.rock, roughness: 0.95, flatShading: true })
+  if (theme.rockEmissive) { mat.emissive.setHex(theme.rockEmissive); mat.emissiveIntensity = 0.5 }
+  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 0), mat)
   m.rotation.set(rand() * Math.PI, rand() * Math.PI, rand() * Math.PI)
   m.castShadow = true
   m.receiveShadow = true
   return m
 }
 
-function buildGrassTuft() {
+function buildGrassTuft(theme) {
   const g = new THREE.Group()
-  const mat = new THREE.MeshStandardMaterial({ color: 0x5fae3f, roughness: 0.9, side: THREE.DoubleSide })
+  const mat = new THREE.MeshStandardMaterial({ color: theme.grass, roughness: 0.9, side: THREE.DoubleSide })
+  if (theme.grassEmissive) { mat.emissive.setHex(theme.grassEmissive); mat.emissiveIntensity = 0.6 }
   for (let i = 0; i < 5; i++) {
     const h = 0.25 + rand() * 0.2
     const blade = new THREE.Mesh(new THREE.ConeGeometry(0.02, h, 3), mat)
@@ -261,8 +408,125 @@ function buildPlatform(w, d, h) {
   return g
 }
 
-// 主入口：建立整個場地（地形/水面/植被/道具）。duelDistance 用來算對戰走廊要留多長。
-export function buildEnvironment(scene, renderer, duelDistance) {
+// ---- 各關專屬造景：荒漠仙人掌／熔岩餘燼／沼澤發光菇／終焉競技場火盆，讓場景不只是換色 ----
+function buildCactus() {
+  const g = new THREE.Group()
+  const mat = new THREE.MeshStandardMaterial({ color: 0x4a7a3a, roughness: 0.8 })
+  const trunkH = 1.0 + rand() * 0.8
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, trunkH, 8), mat)
+  trunk.position.y = trunkH / 2
+  trunk.castShadow = true
+  g.add(trunk)
+  for (let i = 0; i < 2; i++) {
+    const armH = 0.5 + rand() * 0.4
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, armH, 6), mat)
+    const side = i === 0 ? 1 : -1
+    arm.position.set(side * 0.22, trunkH * (0.45 + rand() * 0.3), 0)
+    arm.rotation.z = side * 0.9
+    arm.castShadow = true
+    g.add(arm)
+  }
+  return g
+}
+
+function buildEmberGlow() {
+  const mat = new THREE.MeshStandardMaterial({ color: 0xff6a1a, emissive: 0xff5500, emissiveIntensity: 1.2, roughness: 0.4 })
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.08 + rand() * 0.06, 6, 6), mat)
+  m.position.y = 0.06
+  return m
+}
+
+function buildGlowMushroom() {
+  const g = new THREE.Group()
+  const stemMat = new THREE.MeshStandardMaterial({ color: 0xe8e0d0, roughness: 0.8 })
+  const capMat = new THREE.MeshStandardMaterial({ color: 0x6fe0a0, emissive: 0x2fb070, emissiveIntensity: 0.9, roughness: 0.5 })
+  const n = 2 + Math.floor(rand() * 3)
+  for (let i = 0; i < n; i++) {
+    const h = 0.12 + rand() * 0.14
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, h, 6), stemMat)
+    stem.position.set((rand() - 0.5) * 0.3, h / 2, (rand() - 0.5) * 0.3)
+    g.add(stem)
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.06 + rand() * 0.04, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2), capMat)
+    cap.position.copy(stem.position)
+    cap.position.y = h
+    g.add(cap)
+  }
+  return g
+}
+
+function buildBrazier() {
+  const g = new THREE.Group()
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x2a2018, roughness: 0.7, metalness: 0.4 })
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 1.1, 6), poleMat)
+  pole.position.y = 0.55
+  pole.castShadow = true
+  g.add(pole)
+  const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.14, 0.22, 8), poleMat)
+  bowl.position.y = 1.12
+  g.add(bowl)
+  const flameMat = new THREE.MeshStandardMaterial({ color: 0xff8a2a, emissive: 0xff5a00, emissiveIntensity: 1.6, roughness: 0.3 })
+  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.34, 8), flameMat)
+  flame.position.y = 1.35
+  g.add(flame)
+  const light = new THREE.PointLight(0xff6a1a, 6, 7, 2)
+  light.position.y = 1.3
+  g.add(light)
+  return g
+}
+
+// 依主題的 extra 標記，在場地外圍空地上加幾個專屬造景（找不到空位就少放幾個，不強求）
+function buildThemeExtras(scene, theme) {
+  if (!theme.extra) return
+  const builders = { cactus: buildCactus, embers: buildEmberGlow, mushrooms: buildGlowMushroom, braziers: buildBrazier }
+  const build = builders[theme.extra]
+  if (!build) return
+  const count = theme.extra === 'braziers' ? 4 : 10
+  for (let i = 0; i < count; i++) {
+    const spot = pickSpot(30, 24)
+    if (!spot) continue
+    const obj = build()
+    obj.position.set(spot.x, spot.y, spot.z)
+    obj.rotation.y = rand() * Math.PI * 2
+    track(scene, obj)
+    if (theme.extra !== 'braziers') obstacleSpots.push({ x: spot.x, z: spot.z, r: 0.3 })
+  }
+}
+
+// 把上一關加進場景的所有物件移除並釋放幾何/材質/貼圖記憶體，同時清空各種追蹤陣列
+function disposeObject(obj) {
+  obj.traverse((o) => {
+    if (o.isMesh) {
+      o.geometry?.dispose()
+      const mats = Array.isArray(o.material) ? o.material : [o.material]
+      for (const m of mats) { m?.map?.dispose(); m?.dispose() }
+    }
+  })
+}
+export function clearEnvironment() {
+  for (const obj of sceneObjects) {
+    obj.removeFromParent()
+    disposeObject(obj)
+  }
+  sceneObjects.length = 0
+  swayables.length = 0
+  treeTops.length = 0
+  obstacleSpots.length = 0
+  clouds.length = 0
+  platformSpots = []
+  opponentStandY = 0
+}
+
+// 主入口：建立整個場地（地形/水面/植被/道具）。duelDistance 用來算對戰走廊要留多長，
+// level（1~10）決定要套用哪一套關卡主題（配色/密度/專屬造景），未傳則用第 1 關
+export function buildEnvironment(scene, renderer, duelDistance, level = 1) {
+  clearEnvironment()
+  const theme = getTheme(level)
+  rand = mulberry32(theme.seed)
+
+  // Level 1 維持原本固定的湖泊/河流，Level 2 開始每關重新隨機產生一組不同的形狀/流向
+  LAKE = level === 1 ? LEVEL1_LAKE : generateLake(rand)
+  RIVER = level === 1 ? LEVEL1_RIVER : generateRiver(rand)
+
   corridorHalfLen = duelDistance / 2 + 3
   archerZ = duelDistance / 2
   const platformZ = duelDistance * 0.3
@@ -276,59 +540,79 @@ export function buildEnvironment(scene, renderer, duelDistance) {
     return { ...p, y, surfaceY, topY: surfaceY + 0.08, halfW: 1.6, halfD: 1.1 }
   })
 
-  buildGround(scene, renderer)
-  buildWater(scene)
+  buildGround(scene, renderer, theme)
+  buildWater(scene, theme)
 
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < theme.treeCount; i++) {
     const spot = pickSpot(38, 38)
     if (!spot) continue
-    const tree = rand() < 0.5 ? buildRoundTree() : buildPineTree()
+    const tree = theme.treeMode === 'crystal'
+      ? buildCrystalCluster(theme)
+      : (rand() < 0.5 ? buildRoundTree(theme) : buildPineTree(theme))
     tree.position.set(spot.x, spot.y, spot.z)
     tree.rotation.y = rand() * Math.PI * 2
     const s = 0.85 + rand() * 0.5
     tree.scale.setScalar(s)
-    scene.add(tree)
+    track(scene, tree)
     swayables.push({ group: tree, phase: rand() * 10, freq: 0.7 + rand() * 0.3, amp: 0.11 })
     treeTops.push({ x: spot.x, y: spot.y + tree.userData.topY * s, z: spot.z })
     obstacleSpots.push({ x: spot.x, z: spot.z, r: 0.45 * s })
   }
 
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < theme.rockClusterCount; i++) {
     const spot = pickSpot(35, 35)
     if (!spot) continue
     const n = 2 + Math.floor(rand() * 3)
     for (let j = 0; j < n; j++) {
-      const rock = buildRock()
+      const rock = buildRock(theme)
       rock.position.set(spot.x + (rand() - 0.5) * 1.2, spot.y, spot.z + (rand() - 0.5) * 1.2)
       obstacleSpots.push({ x: rock.position.x, z: rock.position.z, r: 0.4 })
-      scene.add(rock)
+      track(scene, rock)
     }
   }
 
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < theme.grassCount; i++) {
     const spot = pickSpot(30, 20)
     if (!spot) continue
-    const tuft = buildGrassTuft()
+    const tuft = buildGrassTuft(theme)
     tuft.position.set(spot.x, spot.y, spot.z)
     tuft.rotation.y = rand() * Math.PI * 2
-    scene.add(tuft)
+    track(scene, tuft)
     swayables.push({ group: tuft, phase: rand() * 10, freq: 1.4 + rand() * 0.6, amp: 0.4 })
   }
+
+  buildThemeExtras(scene, theme)
 
   // 兩座觀戰高台，分別在場地兩側，貼著該處的地形高度放置避免浮空/插地
   for (const p of platformSpots) {
     const plat = buildPlatform(3.2, 2.2, 1.1)
     plat.position.set(p.x, terrainHeight(p.x, p.z), p.z)
-    scene.add(plat)
+    track(scene, plat)
   }
 
-  // 風向旗：主角右邊 5 公尺、再往對手方向前移 2 公尺，站在主角視野內比較看得到飄動
-  const vaneX = 5, vaneZ = duelDistance / 2 - 2
-  buildWindVane(scene, vaneX, vaneZ)
+  // Level 3 專屬：對手改站在一個矮台上，比玩家（站地面，root.y=0）略高一點。矮台也註冊進
+  // platformSpots，才會跟觀戰高台一樣享有箭矢碰撞判定（射偏的箭會插在台面上，不會直接穿過去）
+  if (level === 3) {
+    const oppH = 0.5
+    const oppX = 0, oppZ = -archerZ
+    const y = terrainHeight(oppX, oppZ)
+    const surfaceY = y + oppH + 0.125
+    platformSpots.push({ x: oppX, z: oppZ, r: 1.6, y, surfaceY, topY: surfaceY + 0.08, halfW: 1.1, halfD: 1.1 })
+    const oppPlat = buildPlatform(2.2, 2.2, oppH)
+    oppPlat.position.set(oppX, y, oppZ)
+    track(scene, oppPlat)
+    opponentStandY = surfaceY
+  }
+
+  // 風向旗：固定在玩家右前方 4 公尺（45 度角），跟站位距離無關，不會因為關卡拉開對戰距離而跑位
+  const vaneOffset = 4 / Math.SQRT2
+  buildWindVane(scene, vaneOffset, archerZ - vaneOffset)
   buildClouds(scene)
+
+  return theme
 }
 
-// 給 birds.js 用：所有樹梢的世界座標，鳥要停棲時從這裡挑
+// 給 birds.js 用：所有樹梢（含水晶叢頂端）的世界座標，鳥要停棲時從這裡挑
 export function getTreeTops() {
   return treeTops
 }
@@ -336,6 +620,11 @@ export function getTreeTops() {
 // 給 main.js 用：觀戰高台的位置與地面高度/檯面高度，方便算出檯面上的世界座標
 export function getPlatformSpots() {
   return platformSpots
+}
+
+// 給 main.js 用：這關對手應該站的高度（大多數關卡是 0，Level 3 是矮台頂面高度）
+export function getOpponentStandY() {
+  return opponentStandY
 }
 
 // 給 main.js 用：找一塊不在湖泊河流/看台範圍內的空地座標；avoidObstacles=true 時
@@ -393,7 +682,7 @@ function buildClouds(scene) {
     for (let i = 0; i < layer.count; i++) {
       const puff = buildCloudPuff(layer.scale)
       puff.position.set((rand() * 2 - 1) * CLOUD_BOUND, layer.y, (rand() * 2 - 1) * CLOUD_BOUND)
-      scene.add(puff)
+      track(scene, puff)
       clouds.push({ group: puff, speedMul: layer.speedMul })
     }
   }
@@ -421,7 +710,7 @@ function buildWindVane(scene, x, z) {
   flag.castShadow = true
   flagGroup.add(flag)
   g.add(flagGroup)
-  scene.add(g)
+  track(scene, g)
 
   const basePos = flag.geometry.attributes.position.array.slice()
   swayables.push({ flagGroup, flag, basePos, isFlag: true })

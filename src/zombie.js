@@ -413,6 +413,13 @@ export function getActiveZombies() {
   return zombies.filter((z) => z.state === 'active')
 }
 
+// 給關卡切換用：清掉場上所有殭屍（含屍體），新關卡的地形/走廊長度都不一樣了，
+// 留著舊的殭屍位置會對不上新場地。免疫紀錄另外由 resetZombieBiteImmunity() 處理
+export function clearZombies() {
+  for (const z of zombies) z.mesh.removeFromParent()
+  zombies.length = 0
+}
+
 // 測試箭矢本幀掃過的路徑有沒有打中任何一隻活著的殭屍，回傳最近的一隻（沒打中回傳 null）
 export function testArrowHitZombie(prevPos, currPos, arrowRadius) {
   const seg = new THREE.Vector3().subVectors(currPos, prevPos)

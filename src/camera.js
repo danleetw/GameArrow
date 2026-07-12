@@ -18,6 +18,12 @@ export class CameraRig {
     this.aimNoise = { yaw: 0, pitch: 0 }   // 被命中時注入，每幀指數衰減，模擬中箭的瞄準後座反應
     this.cutting = false                   // 是否正處於命中運鏡（第三人稱）
 
+    // 拉弓時的持續性準星飄動（跟 aimNoise 不同：不會自動衰減，玩家要自己動滑鼠/拖曳抵銷，
+    // 放開弓或取消蓄力時才會歸零）——見 startSway()/stopSway()
+    this.sway = { yaw: 0, pitch: 0 }
+    this.swayActive = false
+    this.swayT = 0
+
     camera.rotation.order = 'YXZ'
     camera.position.copy(this.eye)
     this._applyRotation()
@@ -45,9 +51,22 @@ export class CameraRig {
     this._applyRotation()
   }
 
+  // 觸控拖曳版視角調整：跟滑鼠版同一套換算，但不經過 Pointer Lock（觸控裝置不支援/不需要這個
+  // 機制），由呼叫端直接算好這一幀的位移量（像素）餵進來
+  applyTouchDelta(dx, dy) {
+    this.yaw -= dx * SENS * this.sensitivity
+    this.pitch -= dy * SENS * this.sensitivity
+    this.pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, this.pitch))
+    this._applyRotation()
+  }
+
   _applyRotation() {
     this.camera.position.copy(this.eye)
-    this.camera.rotation.set(this.pitch + this.aimNoise.pitch, this.yaw + this.aimNoise.yaw, 0)
+    this.camera.rotation.set(
+      this.pitch + this.aimNoise.pitch + this.sway.pitch,
+      this.yaw + this.aimNoise.yaw + this.sway.yaw,
+      0
+    )
   }
 
   // 中箭時呼叫：往隨機方向注入一次性瞄準偏移衝量，幅度由命中部位分級決定
@@ -56,11 +75,37 @@ export class CameraRig {
     this.aimNoise.pitch += (Math.random() - 0.5) * 2 * magnitude
   }
 
-  // 每幀呼叫：讓瞄準偏移隨時間指數衰減回 0（約 0.3 秒內平息），並推進運鏡狀態
+  // 開始拉弓時呼叫：準星進入持續飄動狀態，水平/垂直各自用獨立的正弦波（不同相位/頻率/幅度），
+  // 讓飄動軌跡不是單純的圓形/對角線，玩家得一直修正滑鼠才能把準星維持在目標上
+  startSway(ampYaw, ampPitch, freqYaw, freqPitch) {
+    this.swayActive = true
+    this.swayT = 0
+    this.swayPhaseYaw = Math.random() * Math.PI * 2
+    this.swayPhasePitch = Math.random() * Math.PI * 2
+    this.swayAmpYaw = ampYaw
+    this.swayAmpPitch = ampPitch
+    this.swayFreqYaw = freqYaw
+    this.swayFreqPitch = freqPitch
+  }
+
+  // 放箭/取消蓄力時呼叫：飄動立刻歸零，準星回到玩家滑鼠實際指向的位置
+  stopSway() {
+    this.swayActive = false
+    this.sway.yaw = 0
+    this.sway.pitch = 0
+  }
+
+  // 每幀呼叫：讓瞄準偏移隨時間指數衰減回 0（約 0.3 秒內平息），推進拉弓飄動與運鏡狀態
   update(dt) {
     const decay = Math.pow(0.01, dt / 0.3)
     this.aimNoise.yaw *= decay
     this.aimNoise.pitch *= decay
+
+    if (this.swayActive) {
+      this.swayT += dt
+      this.sway.yaw = Math.sin(this.swayT * this.swayFreqYaw + this.swayPhaseYaw) * this.swayAmpYaw
+      this.sway.pitch = Math.sin(this.swayT * this.swayFreqPitch + this.swayPhasePitch) * this.swayAmpPitch
+    }
 
     if (this.cutting) {
       this.cutT += dt
@@ -97,12 +142,15 @@ export class CameraRig {
     this._applyRotation()
   }
 
-  // 目前視線方向的單位向量（供瞄準/彈道使用）
-  getAimDirection(target = new THREE.Vector3()) {
+  // 目前視線方向的單位向量（供瞄準/彈道使用）。自動疊加拉弓時的持續飄動（this.sway），
+  // 所以蓄力中的預覽彈道、跟真正放箭當下算出來的方向，都會反映玩家有沒有成功用滑鼠抵銷飄動。
+  // extraYaw/extraPitch 可再疊加額外角度偏移，不會動到 this.yaw/this.pitch 本身
+  getAimDirection(target = new THREE.Vector3(), extraYaw = 0, extraPitch = 0) {
+    const yaw = this.yaw + this.sway.yaw + extraYaw, pitch = this.pitch + this.sway.pitch + extraPitch
     return target.set(
-      -Math.sin(this.yaw) * Math.cos(this.pitch),
-      Math.sin(this.pitch),
-      -Math.cos(this.yaw) * Math.cos(this.pitch)
+      -Math.sin(yaw) * Math.cos(pitch),
+      Math.sin(pitch),
+      -Math.cos(yaw) * Math.cos(pitch)
     )
   }
 }

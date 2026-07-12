@@ -538,6 +538,14 @@ export function killBird(bird) {
   bird.kill()
 }
 
+// 給關卡切換用：清掉場上所有鳥（舊場景的樹梢/站位在新關卡座標系底下已經不對了，
+// 留著的話鳥會停在半空或跑到新場地外面），連同計時器一起重置成剛開場的狀態
+export function clearBirds() {
+  for (const b of birds) b.mesh.removeFromParent()
+  birds.length = 0
+  nextCheckT = SPAWN_CHECK_MIN + Math.random() * (SPAWN_CHECK_MAX - SPAWN_CHECK_MIN)
+}
+
 // 每幀呼叫：計時到了就擲骰決定要不要生新的環境鳥，並更新所有現存鳥的飛行/振翅
 // archers：[playerArcher, aiArcher]，讓鳥有機會飛去停在他們頭上或身邊
 export function updateBirds(dt, scene, archers) {

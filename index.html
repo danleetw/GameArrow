@@ -23,6 +23,22 @@
     #crosshair::before { left: 50%; top: 0; width: 3px; height: 100%; transform: translateX(-50%); }
     #crosshair::after { top: 50%; left: 0; height: 3px; width: 100%; transform: translateY(-50%); }
 
+    /* 手臂休息中：準星疊加禁止符號（圓圈＋斜線），休息結束才取消 */
+    #crosshair-forbidden {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 34px; height: 34px; pointer-events: none; z-index: 5;
+      border: 4px solid #ff3b30; border-radius: 50%;
+      box-shadow: 0 0 0 1px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.4);
+      display: none;
+    }
+    #crosshair-forbidden.show { display: block; }
+    #crosshair-forbidden::after {
+      content: ''; position: absolute; left: 50%; top: 50%;
+      width: 4px; height: 40px; background: #ff3b30;
+      transform: translate(-50%, -50%) rotate(45deg);
+      box-shadow: 0 0 0 1px rgba(0,0,0,.5);
+    }
+
     #pause-hint { position: fixed; right: 14px; bottom: 14px; z-index: 6; pointer-events: none;
       font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,.35);
       padding: 6px 12px; border-radius: 999px; text-shadow: 0 1px 3px rgba(0,0,0,.5); }
@@ -33,6 +49,19 @@
       pointer-events: none; font-size: 11px; font-weight: 700; color: rgba(255,255,255,.75);
       background: rgba(0,0,0,.3); padding: 3px 10px; border-radius: 999px;
       text-shadow: 0 1px 3px rgba(0,0,0,.5); letter-spacing: .5px; }
+
+    /* 關卡標示：畫面右上角，顯示目前 Level 與場景主題名稱 */
+    #level-label { position: fixed; top: 14px; right: 14px; z-index: 6; pointer-events: none;
+      font-size: 13px; font-weight: 800; color: #fff; background: rgba(0,0,0,.4);
+      padding: 6px 14px; border-radius: 999px; text-shadow: 0 1px 3px rgba(0,0,0,.5); letter-spacing: 1px; }
+    #level-label.hidden { display: none; }
+
+    /* 分數標示：緊接在關卡標示下方，顯示最佳關卡/最佳分數/本次分數（存在 localStorage） */
+    #stats-label { position: fixed; top: 50px; right: 14px; z-index: 6; pointer-events: none;
+      font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,.4);
+      padding: 6px 14px; border-radius: 12px; text-shadow: 0 1px 3px rgba(0,0,0,.5);
+      text-align: right; line-height: 1.6; }
+    #stats-label.hidden { display: none; }
     kbd { background: #eee; border-radius: 5px; padding: 1px 7px; font-family: monospace; color: #333; }
 
     /* 開始 / 暫停 / 設定 覆蓋 */
@@ -114,7 +143,10 @@
 <body>
   <canvas id="game"></canvas>
   <div id="version-label"></div>
+  <div id="level-label" class="hidden"></div>
+  <div id="stats-label" class="hidden"></div>
   <div id="crosshair" class="hidden"></div>
+  <div id="crosshair-forbidden"></div>
   <div id="power" class="hidden"><div id="power-fill"></div></div>
   <div id="portrait-wrap" class="hidden">
     <div id="portrait-frame"></div>

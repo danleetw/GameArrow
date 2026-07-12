@@ -7,11 +7,12 @@ import { getActiveZombies } from './zombie.js'
 const ZOMBIE_ALERT_RADIUS_SQ = 11 * 11   // 殭屍在 AI 對手附近這個距離內，就不蓄力發弓
 const _aiEyePos = new THREE.Vector3()
 
-// AI 對手整體命中機率固定在 1/10：每次拉弓先擲骰決定這一箭是不是「真的瞄準」的那 1/10，
-// 是的話用很小的誤差（幾乎一定會中），不是的話直接加一個保證偏出目標範圍的角度，而不是
-// 沿用舊版「疊加連續隨機誤差」的做法——那種做法命中率會隨距離/難度飄動，沒辦法保證固定比例
-const HIT_CHANCE = 0.1
-const TRUE_AIM_ERROR = 0.03   // 命中那 1/10 用的極小誤差
+// AI 對手命中機率是可調的固定比例（由關卡系統依 Level 1~10 從 10% 線性調到 60%，見 main.js
+// 的 LEVELS 設定）：每次拉弓先擲骰決定這一箭是不是「真的瞄準」的那次，是的話用很小的誤差
+// （幾乎一定會中），不是的話直接加一個保證偏出目標範圍的角度，而不是沿用「疊加連續隨機誤差」
+// 的做法——那種做法命中率會隨距離/難度飄動，沒辦法保證固定比例
+const DEFAULT_HIT_CHANCE = 0.1
+const TRUE_AIM_ERROR = 0.03   // 命中那次用的極小誤差
 const MISS_ERROR_MIN = 0.35   // 保證偏出目標範圍的誤差下限
 const MISS_ERROR_MAX = 0.6
 
@@ -58,6 +59,12 @@ export class AIController {
     this.origin = new THREE.Vector3()
     this.dir = new THREE.Vector3(0, 0, 1)
     this.speed = SPEED_MIN
+    this.hitChance = DEFAULT_HIT_CHANCE
+  }
+
+  // 關卡切換時呼叫：更新這個 AI 對手的固定命中機率（0~1）
+  setHitChance(chance) {
+    this.hitChance = Math.max(0, Math.min(1, chance))
   }
 
   update(dt) {
@@ -126,9 +133,9 @@ export class AIController {
       dir.y = Math.sin(pitch)
     }
 
-    // 每次拉弓只擲骰一次（不連續抖動），決定這一箭是命中機率 1/10 裡「真的瞄準」的那次，
-    // 還是刻意偏出去的那 9/10；同一箭全程用同一組誤差，讀起來像刻意瞄準/失手而不是手抖
-    if (Math.random() < HIT_CHANCE) {
+    // 每次拉弓只擲骰一次（不連續抖動），決定這一箭是命中機率裡「真的瞄準」的那次，
+    // 還是刻意偏出去的那次；同一箭全程用同一組誤差，讀起來像刻意瞄準/失手而不是手抖
+    if (Math.random() < this.hitChance) {
       dir.x += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
       dir.y += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
       dir.z += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
