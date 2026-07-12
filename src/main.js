@@ -152,6 +152,15 @@ const resultEl = document.getElementById('result')
 const resultTitleEl = document.getElementById('result-title')
 const hitLabelEl = document.getElementById('hit-label')
 
+// ---- 版本標示：畫面上方顯示最後一次 git commit 的時間（build 時寫死進來，見 vite.config.js），
+//      直接切字串取原始時區的年月日時分，不用 Date 物件轉換，避免跟瀏覽器所在時區換算後跑掉 ----
+;(() => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(__LAST_UPDATE_ISO__)
+  if (!m) return
+  const [, yyyy, mm, dd, hh, min] = m
+  document.getElementById('version-label').textContent = `v${yyyy.slice(2)}.${mm}.${dd} ${hh}:${min}`
+})()
+
 const ZONE_NAME_ZH = {
   head: '頭', chest: '胸',
   upperArm_L: '左大臂', upperArm_R: '右大臂', foreArm_L: '左小臂', foreArm_R: '右小臂',
