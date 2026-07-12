@@ -64,14 +64,17 @@
     #stats-label.hidden { display: none; }
     kbd { background: #eee; border-radius: 5px; padding: 1px 7px; font-family: monospace; color: #333; }
 
-    /* 手機專用望遠鈕：畫面右側中間的圓鈕，按住＝取消蓄力＋進入望遠模式，放開＝恢復正常視野 */
-    #zoom-btn { position: fixed; right: 18px; top: 50%; transform: translateY(-50%); z-index: 6;
+    /* 手機專用操作鈕：蓄力發射鈕（左）＋望遠鈕（右），並排放在血量條上方一點點，
+       方便雙手拇指分別操作——左手按住蓄力鈕蓄力/放開發射，右手拖曳畫面瞄準、或按右邊望遠鈕 */
+    #charge-btn, #zoom-btn { position: fixed; bottom: 100px; z-index: 6;
       width: 64px; height: 64px; border-radius: 50%; padding: 0;
       display: flex; align-items: center; justify-content: center; font-size: 28px;
       background: rgba(0,0,0,.4); box-shadow: 0 0 0 2px rgba(255,255,255,.35), 0 4px 10px rgba(0,0,0,.35);
       touch-action: none; -webkit-user-select: none; user-select: none; }
-    #zoom-btn.active { background: rgba(255,154,61,.55); box-shadow: 0 0 0 2px rgba(255,255,255,.7), 0 4px 10px rgba(0,0,0,.35); }
-    #zoom-btn.hidden { display: none; }
+    #charge-btn { left: calc(50% - 150px); }
+    #zoom-btn { left: calc(50% + 150px - 64px); }
+    #charge-btn.active, #zoom-btn.active { background: rgba(255,154,61,.55); box-shadow: 0 0 0 2px rgba(255,255,255,.7), 0 4px 10px rgba(0,0,0,.35); }
+    #charge-btn.hidden, #zoom-btn.hidden { display: none; }
 
     /* 開始 / 暫停 / 設定 覆蓋 */
     #overlay, #pause, #settings {
@@ -156,6 +159,7 @@
   <div id="stats-label" class="hidden"></div>
   <div id="crosshair" class="hidden"></div>
   <div id="crosshair-forbidden"></div>
+  <button id="charge-btn" class="hidden" aria-label="蓄力發射">🏹</button>
   <button id="zoom-btn" class="hidden" aria-label="望遠">🔭</button>
   <div id="power" class="hidden"><div id="power-fill"></div></div>
   <div id="portrait-wrap" class="hidden">

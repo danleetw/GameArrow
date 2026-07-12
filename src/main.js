@@ -210,41 +210,58 @@ canvas.addEventListener('mousedown', (e) => {
 })
 window.addEventListener('mouseup', (e) => { if (e.button === 0) fireUp() })
 
-// ---- 手機觸控：長按＝蓄力拉弓（跟按住左鍵一樣），拖曳＝移動準星（視角），
-//      拖出畫面外＝放棄這一箭不發射，手指放開＝放箭 ----
-let touchId = null, touchLastX = 0, touchLastY = 0
-function withinViewport(x, y) {
-  return x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight
-}
+// ---- 手機觸控：畫面拖曳只負責移動準星（視角），蓄力/發射改成左下角的專屬按鈕（見下面
+//      #charge-btn），不是隨手一按畫面就蓄力——手機沒有滑鼠，「按住畫面同時還要拖曳瞄準」
+//      兩件事疊在同一根手指上很難操作，拆成兩根手指（左手按蓄力鈕、右手拖曳畫面）比較好按 ----
+let aimTouchId = null, touchLastX = 0, touchLastY = 0
 canvas.addEventListener('touchstart', (e) => {
-  if (touchId !== null) return   // 已經有一根手指在操作了，忽略其他手指
+  if (aimTouchId !== null) return   // 已經有一根手指在拖曳瞄準了，忽略其他手指（蓄力鈕是另一根手指、獨立處理）
   const t = e.changedTouches[0]
-  touchId = t.identifier
+  aimTouchId = t.identifier
   touchLastX = t.clientX; touchLastY = t.clientY
-  fireDown()
   e.preventDefault()
 }, { passive: false })
 canvas.addEventListener('touchmove', (e) => {
-  if (touchId === null) return
-  const t = Array.from(e.changedTouches).find((x) => x.identifier === touchId)
+  if (aimTouchId === null) return
+  const t = Array.from(e.changedTouches).find((x) => x.identifier === aimTouchId)
   if (!t) return
-  if (!withinViewport(t.clientX, t.clientY)) {
-    cancelCharge()
-    touchId = null
-    return
-  }
   cameraRig.applyTouchDelta(t.clientX - touchLastX, t.clientY - touchLastY)
   touchLastX = t.clientX; touchLastY = t.clientY
   e.preventDefault()
 }, { passive: false })
-function endTouch(e) {
-  if (touchId === null) return
-  if (!Array.from(e.changedTouches).some((x) => x.identifier === touchId)) return
-  touchId = null
+function endAimTouch(e) {
+  if (aimTouchId === null) return
+  if (!Array.from(e.changedTouches).some((x) => x.identifier === aimTouchId)) return
+  aimTouchId = null
+}
+canvas.addEventListener('touchend', endAimTouch)
+canvas.addEventListener('touchcancel', endAimTouch)
+
+// ---- 手機專屬蓄力發射鈕：按住＝蓄力（等同按住左鍵），放開＝放箭；被系統中斷（來電等）算放棄
+//      這一箭、不會誤發射 ----
+const chargeBtnEl = document.getElementById('charge-btn')
+let chargeBtnTouchId = null
+chargeBtnEl.addEventListener('touchstart', (e) => {
+  e.preventDefault()
+  if (chargeBtnTouchId !== null) return
+  chargeBtnTouchId = e.changedTouches[0].identifier
+  chargeBtnEl.classList.add('active')
+  fireDown()
+}, { passive: false })
+function endChargeBtn(e) {
+  if (chargeBtnTouchId === null) return
+  if (!Array.from(e.changedTouches).some((t) => t.identifier === chargeBtnTouchId)) return
+  chargeBtnTouchId = null
+  chargeBtnEl.classList.remove('active')
   fireUp()
 }
-canvas.addEventListener('touchend', endTouch)
-canvas.addEventListener('touchcancel', () => { if (touchId !== null) { cancelCharge(); touchId = null } })
+chargeBtnEl.addEventListener('touchend', endChargeBtn)
+chargeBtnEl.addEventListener('touchcancel', (e) => {
+  if (chargeBtnTouchId === null) return
+  chargeBtnTouchId = null
+  chargeBtnEl.classList.remove('active')
+  cancelCharge()
+})
 
 // ---- 望遠縮放：按住右鍵 + 滾輪調整視野（不影響實際瞄準方向，純視覺放大）。望遠中不能發射，
 //      拉弓拉到一半按右鍵望遠也會直接打斷蓄力，不能靠先拉弓、再放大視野瞄得更準 ----
@@ -538,13 +555,31 @@ function _revealGameplayHud() {
   playerHudEl.classList.remove('hidden')
   levelLabelEl.classList.remove('hidden')
   statsLabelEl.classList.remove('hidden')
-  if (IS_TOUCH) zoomBtnEl.classList.remove('hidden')   // 望遠鈕只在觸控裝置上顯示
+  if (IS_TOUCH) {
+    zoomBtnEl.classList.remove('hidden')   // 望遠鈕/蓄力鈕只在觸控裝置上顯示
+    chargeBtnEl.classList.remove('hidden')
+  }
+}
+
+function _hideGameplayHud() {
+  crosshairEl.classList.add('hidden')
+  powerEl.classList.add('hidden')
+  pauseHintEl.classList.add('hidden')
+  portraitWrapEl.classList.add('hidden')
+  playerHudEl.classList.add('hidden')
+  levelLabelEl.classList.add('hidden')
+  statsLabelEl.classList.add('hidden')
+  zoomBtnEl.classList.add('hidden')
+  chargeBtnEl.classList.add('hidden')
 }
 
 // 依設定決定要播放開場空拍運鏡還是直接進第一人稱：每一關開始都會呼叫一次
 // （開場、換到下一關、全破後重新開始都算），只有玩家自己在設定裡關掉才會跳過
 function beginGameplayView() {
   if (settings.introEnabled) {
+    // 換關重播運鏡時，上一關結束時顯示出來的準星/血條/對手小視窗框都還留著，
+    // 運鏡開始前要先收起來，不然運鏡轉場的時候會看到上一關殘留的 HUD（對手小視窗尤其明顯）
+    _hideGameplayHud()
     introActive = true
     introT = 0
     playerArcher.root.visible = true   // 開場運鏡要拍到主角背影，結束後才切回第一人稱隱藏自己
@@ -619,15 +654,10 @@ function quitToMenu() {
   paused = false
   pauseEl.classList.add('hidden')
   overlayEl.classList.remove('hidden')
-  crosshairEl.classList.add('hidden')
-  powerEl.classList.add('hidden')
-  pauseHintEl.classList.add('hidden')
-  portraitWrapEl.classList.add('hidden')
-  playerHudEl.classList.add('hidden')
-  levelLabelEl.classList.add('hidden')
-  statsLabelEl.classList.add('hidden')
-  zoomBtnEl.classList.add('hidden')
+  _hideGameplayHud()
   endTouchZoom()   // 回選單前確保望遠鈕的視野狀態也重置乾淨
+  chargeBtnEl.classList.remove('active')
+  chargeBtnTouchId = null   // 回選單前把蓄力鈕的觸控狀態也重置乾淨，避免殘留一個對不上的手指 id
   playing = false
   music.stop()
   // 回選單前先把這關重置乾淨（HP/位置/殘留箭矢等），下次按「開始對決」才不會接著中途的殘局，
@@ -766,10 +796,15 @@ function loop() {
     if (!paused) {
       introT += dt
       updateIntroCamera(introT / INTRO_DUR)
-      if (introT >= INTRO_DUR) endIntro()
+      if (introT >= INTRO_DUR) endIntro()   // 這裡面會呼叫 _revealGameplayHud() 讓小視窗框現身
     }
-    renderer.render(scene, camera)
-    return
+    // 剛剛這一幀如果運鏡結束了（introActive 被 endIntro() 改成 false），就不要再走運鏡專用的
+    // 提早 return——直接落到下面的正常流程，小視窗框現身的同一幀就會補上內容，不會出現框已經
+    // 打開、裡面卻還沒畫出對手畫面的空一拍
+    if (introActive) {
+      renderer.render(scene, camera)
+      return
+    }
   }
 
   if (playing && !paused) {
