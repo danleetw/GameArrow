@@ -645,6 +645,13 @@ function showPause() {
   charging = false; trajectoryPreview.hide(); powerFillEl.style.width = '0%'
   pauseEl.classList.remove('hidden')
 }
+// 手機沒有 Esc 鍵，這個提示改成可以直接點/按的暫停鈕；文字也換掉，畢竟「Esc」在手機上沒有意義
+if (IS_TOUCH) pauseHintEl.textContent = '⏸ 暫停'
+pauseHintEl.addEventListener('click', () => {
+  if (!playing || paused) return
+  sfx.uiClick()
+  showPause()
+})
 function hidePause() {
   paused = false
   pauseEl.classList.add('hidden')

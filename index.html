@@ -39,10 +39,12 @@
       box-shadow: 0 0 0 1px rgba(0,0,0,.5);
     }
 
-    #pause-hint { position: fixed; right: 14px; bottom: 14px; z-index: 6; pointer-events: none;
+    #pause-hint { position: fixed; right: 14px; bottom: 14px; z-index: 6; cursor: pointer;
       font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,.35);
-      padding: 6px 12px; border-radius: 999px; text-shadow: 0 1px 3px rgba(0,0,0,.5); }
+      padding: 6px 12px; border-radius: 999px; text-shadow: 0 1px 3px rgba(0,0,0,.5);
+      -webkit-user-select: none; user-select: none; }
     #pause-hint.hidden { display: none; }
+    #pause-hint:active { background: rgba(0,0,0,.55); }
 
     /* 版本標示：畫面最上方置中，顯示最後更新日期時間 */
     #version-label { position: fixed; top: 6px; left: 50%; transform: translateX(-50%); z-index: 6;
