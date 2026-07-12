@@ -270,6 +270,28 @@ canvas.addEventListener('wheel', (e) => {
   camera.updateProjectionMatrix()
 }, { passive: false })
 
+// ---- 手機專用望遠鈕：畫面右側圓鈕，按住＝取消蓄力＋進入望遠模式，放開＝恢復正常視野。
+//      直接沿用桌機右鍵望遠的同一個 rightMouseDown 狀態，「望遠中不能發射」的判斷不用重寫一份 ----
+const zoomBtnEl = document.getElementById('zoom-btn')
+const TOUCH_ZOOM_FOV = 30
+function startTouchZoom(e) {
+  e.preventDefault()
+  rightMouseDown = true
+  cancelCharge()
+  camera.fov = TOUCH_ZOOM_FOV
+  camera.updateProjectionMatrix()
+  zoomBtnEl.classList.add('active')
+}
+function endTouchZoom() {
+  rightMouseDown = false
+  camera.fov = FOV_DEFAULT
+  camera.updateProjectionMatrix()
+  zoomBtnEl.classList.remove('active')
+}
+zoomBtnEl.addEventListener('touchstart', startTouchZoom, { passive: false })
+zoomBtnEl.addEventListener('touchend', endTouchZoom)
+zoomBtnEl.addEventListener('touchcancel', endTouchZoom)
+
 // ---- pointer lock / 覆蓋層流程 ----
 const overlayEl = document.getElementById('overlay')
 const pauseEl = document.getElementById('pause')
@@ -516,6 +538,7 @@ function _revealGameplayHud() {
   playerHudEl.classList.remove('hidden')
   levelLabelEl.classList.remove('hidden')
   statsLabelEl.classList.remove('hidden')
+  if (IS_TOUCH) zoomBtnEl.classList.remove('hidden')   // 望遠鈕只在觸控裝置上顯示
 }
 
 // 依設定決定要播放開場空拍運鏡還是直接進第一人稱：每一關開始都會呼叫一次
@@ -603,6 +626,8 @@ function quitToMenu() {
   playerHudEl.classList.add('hidden')
   levelLabelEl.classList.add('hidden')
   statsLabelEl.classList.add('hidden')
+  zoomBtnEl.classList.add('hidden')
+  endTouchZoom()   // 回選單前確保望遠鈕的視野狀態也重置乾淨
   playing = false
   music.stop()
   // 回選單前先把這關重置乾淨（HP/位置/殘留箭矢等），下次按「開始對決」才不會接著中途的殘局，

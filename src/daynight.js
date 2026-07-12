@@ -26,8 +26,8 @@ const FOG_NIGHT = new THREE.Color(0x1a2740)
 const FOG_DAY = new THREE.Color(0xcfd8ea)
 const FOG_TWILIGHT = new THREE.Color(0xe08a5c)
 
-const HEMI_SKY_NIGHT = new THREE.Color(0x30456e)
-const HEMI_GROUND_NIGHT = new THREE.Color(0x212f24)
+const HEMI_SKY_NIGHT = new THREE.Color(0x3a5280)
+const HEMI_GROUND_NIGHT = new THREE.Color(0x2e4030)
 const HEMI_SKY_DAY = new THREE.Color(0xbfd4ea)
 const HEMI_GROUND_DAY = new THREE.Color(0x6b7a4a)
 
@@ -210,16 +210,18 @@ export function updateDayNight(viewerPos = _zero) {
 
   if (usingSun) keyLight.color.copy(SUN_COLOR).lerp(SUNSET_COLOR, twilight)
   else keyLight.color.copy(MOON_COLOR)
-  // 月光強度跟著月相走：滿月最亮、新月最暗，但保留下限（1.1），不會因為沒有月亮就整個變暗——
+  // 月光強度跟著月相走：滿月最亮、新月最暗，但保留下限（1.4），不會因為沒有月亮就整個變暗——
   // 真的沒有月亮時主要靠下面的 hemiLight/ambientLight 撐住畫面亮度
-  const moonIntensity = 1.1 + moonIllum * 0.9
+  const moonIntensity = 1.4 + moonIllum * 0.9
   keyLight.intensity = (usingSun ? 2.6 : moonIntensity) * Math.min(1, activeElevation * 3.5)
 
   hemiLight.color.copy(_colorA.copy(HEMI_SKY_NIGHT).lerp(HEMI_SKY_DAY, daylight))
   hemiLight.groundColor.copy(_colorB.copy(HEMI_GROUND_NIGHT).lerp(HEMI_GROUND_DAY, daylight))
-  hemiLight.intensity = 1.0 + daylight * -0.05     // 夜晚保留下限，避免全黑（>=白天的 0.95），跟月相無關
+  hemiLight.intensity = 1.15 + daylight * -0.2     // 夜晚保留下限，避免全黑（白天仍是原本的 0.95）
 
-  ambientLight.intensity = 0.3 + (1 - daylight) * 0.6
+  // 夜晚人物看起來太暗的主因：環境光（ambientLight）是唯一不分角度、均勻補亮所有表面（包含
+  // 人物衣服這種偏暗的顏色）的光源，所以夜晚下限特別再拉高一點，比單純調亮半球光更有感
+  ambientLight.intensity = 0.3 + (1 - daylight) * 0.85
 
   const top = _colorA.copy(NIGHT_SKY_TOP).lerp(DAY_SKY_TOP, daylight)
   const mid = _colorB.copy(NIGHT_SKY_MID).lerp(DAY_SKY_MID, daylight).lerp(TWILIGHT_MID, twilight * 0.5)
