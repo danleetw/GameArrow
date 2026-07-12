@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>弓箭手對決 Arraw Duel</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; background: #6db8e8; }
+    body { font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif; }
+    #game { position: fixed; top: 0; left: 0; display: block; touch-action: none; }
+
+    /* 準星 */
+    #crosshair {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 22px; height: 22px; pointer-events: none; z-index: 4;
+    }
+    #crosshair.hidden { display: none; }
+    #crosshair::before, #crosshair::after {
+      content: ''; position: absolute; background: #fff;
+      box-shadow: 0 0 0 1px rgba(0,0,0,.85), 0 0 4px rgba(0,0,0,.6);
+    }
+    #crosshair::before { left: 50%; top: 0; width: 3px; height: 100%; transform: translateX(-50%); }
+    #crosshair::after { top: 50%; left: 0; height: 3px; width: 100%; transform: translateY(-50%); }
+
+    #pause-hint { position: fixed; right: 14px; bottom: 14px; z-index: 6; pointer-events: none;
+      font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,.35);
+      padding: 6px 12px; border-radius: 999px; text-shadow: 0 1px 3px rgba(0,0,0,.5); }
+    #pause-hint.hidden { display: none; }
+    kbd { background: #eee; border-radius: 5px; padding: 1px 7px; font-family: monospace; color: #333; }
+
+    /* 開始 / 暫停 / 設定 覆蓋 */
+    #overlay, #pause, #settings {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; background: rgba(0,0,0,.5); z-index: 10; color: #fff;
+    }
+    #overlay.hidden, #pause.hidden, #settings.hidden { display: none; }
+    .box { background: #fbf1d6; color: #6b4a2a; border: 5px solid #d3934e; border-radius: 24px;
+      padding: 30px 42px; text-align: center; box-shadow: 0 0 0 4px #a86a34, 0 22px 50px rgba(0,0,0,.45); max-width: 460px; }
+    .box h2 { font-size: 26px; margin-bottom: 10px; color: #7a4a1e; }
+    .box p { font-size: 14px; color: #8a6a44; line-height: 1.8; margin-bottom: 18px; }
+    button { cursor: pointer; border: none; font: inherit; font-size: 16px; font-weight: 700;
+      color: #fff; background: linear-gradient(#ff9a3d, #ff6a00); padding: 12px 30px; border-radius: 16px;
+      box-shadow: 0 4px 0 rgba(0,0,0,.18); transition: transform .08s; }
+    button:hover { filter: brightness(1.05); }
+    button:active { transform: translateY(3px); box-shadow: 0 1px 0 rgba(0,0,0,.18); }
+    button.ghost { background: #ecdcb4; color: #7a5a34; box-shadow: 0 4px 0 rgba(0,0,0,.12); }
+    .btnrow { display: flex; gap: 12px; justify-content: center; }
+    .set-row { display: flex; align-items: center; gap: 10px; text-align: left; font-size: 14px;
+      color: #6b4a2a; margin-bottom: 18px; max-width: 340px; }
+    .set-row input[type=checkbox] { width: 20px; height: 20px; accent-color: #ff6a00; flex-shrink: 0; }
+
+    #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: #6db8e8; color: #fff; font-size: 16px; z-index: 20; }
+    #loading.hidden { display: none; }
+
+    /* 蓄力條 */
+    #power {
+      position: fixed; left: 50%; bottom: 48px; transform: translateX(-50%);
+      width: 230px; height: 14px; border-radius: 999px; z-index: 5;
+      background: rgba(0,0,0,.5); border: 2px solid rgba(255,255,255,.55);
+      overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,.45);
+    }
+    #power.hidden { display: none; }
+    #power-fill { height: 100%; width: 0%; border-radius: 999px;
+      background: linear-gradient(90deg, #6ee787, #ffd24a, #ff5544); transition: width .02s linear; }
+
+    /* 左上角對手肖像（實際是主畫布上用 scissor 挖出的一小塊即時 3D 渲染） */
+    #portrait-wrap { position: fixed; top: 14px; left: 14px; z-index: 5; pointer-events: none; }
+    #portrait-wrap.hidden { display: none; }
+    #portrait-frame { width: 240px; height: 240px; border-radius: 18px;
+      border: 5px solid #d3934e; box-shadow: 0 0 0 3px #a86a34, 0 6px 16px rgba(0,0,0,.45); }
+    #portrait-label { text-align: center; font-size: 11px; font-weight: 800; color: #fff; letter-spacing: 2px;
+      text-shadow: 0 2px 4px rgba(0,0,0,.6); margin-top: 4px; }
+    .hpbar { position: relative; width: 120px; height: 16px; border-radius: 999px; margin-top: 4px;
+      background: rgba(0,0,0,.5); border: 2px solid rgba(255,255,255,.55); overflow: hidden; }
+    .hpbar > div { height: 100%; width: 100%; border-radius: 999px;
+      background: linear-gradient(90deg, #6ee787, #ffd24a, #ff5544); transition: width .15s ease; }
+    .hpbar > .hpbar-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 900; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none; }
+    #portrait-wrap .hpbar { width: 240px; height: 20px; }
+    #portrait-wrap .hpbar-pct { font-size: 13px; }
+    #player-hud .hpbar { width: 230px; height: 18px; }
+    #player-hud .hpbar-pct { font-size: 12px; }
+
+    /* 玩家自己的血條（畫面下方，第一人稱看不到自己臉，只顯示血量） */
+    #player-hud { position: fixed; left: 50%; bottom: 78px; transform: translateX(-50%); z-index: 5;
+      pointer-events: none; text-align: center; }
+    #player-hud.hidden { display: none; }
+    #player-hud .lbl { font-size: 11px; font-weight: 800; color: #fff; letter-spacing: 2px;
+      text-shadow: 0 2px 4px rgba(0,0,0,.6); margin-bottom: 3px; }
+
+    /* 除錯用：顯示剛剛命中的部位名稱 */
+    #hit-label { position: fixed; top: 46%; left: 50%; transform: translate(-50%, -50%); z-index: 6;
+      pointer-events: none; color: #fff; font-weight: 900; font-size: 22px;
+      text-shadow: 0 2px 8px rgba(0,0,0,.7); opacity: 0; transition: opacity .2s; white-space: nowrap; }
+    #hit-label.show { opacity: 1; }
+
+    /* 勝負畫面 */
+    #result { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; background: rgba(0,0,0,.55); z-index: 10; color: #fff; }
+    #result.hidden { display: none; }
+    #result h2 { font-size: 34px; }
+    #result.win h2 { color: #ffd24a; }
+    #result.lose h2 { color: #ff8a7a; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="crosshair" class="hidden"></div>
+  <div id="power" class="hidden"><div id="power-fill"></div></div>
+  <div id="portrait-wrap" class="hidden">
+    <div id="portrait-frame"></div>
+    <div id="portrait-label">對手</div>
+    <div class="hpbar"><div id="hp-ai-fill"></div><span class="hpbar-pct" id="hp-ai-pct">100%</span></div>
+  </div>
+  <div id="player-hud" class="hidden">
+    <div class="lbl">你的血量</div>
+    <div class="hpbar"><div id="hp-player-fill"></div><span class="hpbar-pct" id="hp-player-pct">100%</span></div>
+  </div>
+  <div id="pause-hint" class="hidden"><kbd>Esc</kbd> 暫停 / 返回</div>
+  <div id="hit-label"></div>
+
+  <div id="overlay">
+    <div class="box">
+      <h2>🏹 弓箭手對決</h2>
+      <p>
+        移動滑鼠瞄準 · 按住左鍵蓄力 · 放開放箭<br>
+        射中頭/胸即死，四肢依部位扣血並打亂瞄準<br>
+        點擊「開始對決」後會先來一段空拍鏡頭，結束後自動鎖定滑鼠交還操控
+      </p>
+      <div class="btnrow"><button id="start-btn">▶ 開始對決</button></div>
+    </div>
+  </div>
+
+  <div id="pause" class="hidden">
+    <div class="box">
+      <h2>⏸ 暫停</h2>
+      <div class="btnrow">
+        <button id="resume-btn">▶ 繼續</button>
+        <button id="pause-retry-btn" class="ghost">🔄 重新來過</button>
+        <button id="settings-btn" class="ghost">⚙️ 設定</button>
+        <button id="quit-btn" class="ghost">↺ 回到選單</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings" class="hidden">
+    <div class="box">
+      <h2>⚙️ 遊戲設定</h2>
+      <label class="set-row">
+        <input type="checkbox" id="set-intro" />
+        <span>開場空拍機運鏡（每個瀏覽器工作階段只會播放第一次）</span>
+      </label>
+      <div class="btnrow"><button id="settings-close">關閉</button></div>
+    </div>
+  </div>
+
+  <div id="result" class="hidden">
+    <h2 id="result-title"></h2>
+    <div class="btnrow"><button id="result-retry">↺ 再來一局</button></div>
+  </div>
+
+  <div id="loading">載入中…</div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

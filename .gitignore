@@ -1,0 +1,21 @@
+# 相依套件與建置產物
+node_modules/
+dist/
+
+# 環境變數與機密設定（目前專案沒有，先預防）
+.env
+.env.*
+
+# 編輯器/IDE
+.vscode/
+.idea/
+
+# 作業系統產生的垃圾檔
+.DS_Store
+Thumbs.db
+
+# 記錄檔
+npm-debug.log*
+
+# 內部開發筆記，含本機路徑資訊，不公開
+開發計畫.md

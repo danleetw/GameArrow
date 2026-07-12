@@ -1,0 +1,20 @@
+{
+  "name": "arraw",
+  "version": "1.0.0",
+  "description": "第一人稱弓箭手對戰 — three.js 渲染的單人 vs AI 對決遊戲",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cannon-es": "^0.20.0",
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@gltf-transform/core": "^4.4.1",
+    "@gltf-transform/functions": "^4.4.1",
+    "vite": "^5.4.0"
+  }
+}
