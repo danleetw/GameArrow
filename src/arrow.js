@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { getWindVector } from './wind.js'
-import { getPlatformSpots } from './scene.js'
+import { getPlatformSpots, getSpecialObstacle } from './scene.js'
 
 export const GRAVITY = -9.82
 export const CHARGE_TIME = 0.9
@@ -20,6 +20,40 @@ function findPlatformUnder(x, z) {
     if (Math.abs(x - p.x) < p.halfW && Math.abs(z - p.z) < p.halfD) return p
   }
   return null
+}
+
+// 3D 線段（p0→p1）跟一個 AABB 包圍盒相不相交（slab method）：用整段掃過的路徑測試，
+// 不是只測終點座標，避免箭矢速度太快、一幀之內直接「穿過」障礙物那層薄薄的厚度（tunneling）
+function segmentIntersectsBox(p0, p1, boxMin, boxMax) {
+  let tmin = 0, tmax = 1
+  const dx = p1.x - p0.x, dy = p1.y - p0.y, dz = p1.z - p0.z
+  const axes = [
+    [p0.x, dx, boxMin.x, boxMax.x],
+    [p0.y, dy, boxMin.y, boxMax.y],
+    [p0.z, dz, boxMin.z, boxMax.z],
+  ]
+  for (const [o, d, mn, mx] of axes) {
+    if (Math.abs(d) < 1e-9) {
+      if (o < mn || o > mx) return false
+    } else {
+      let t1 = (mn - o) / d, t2 = (mx - o) / d
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp }
+      tmin = Math.max(tmin, t1)
+      tmax = Math.min(tmax, t2)
+      if (tmin > tmax) return false
+    }
+  }
+  return true
+}
+
+// Level 6 專屬的移動障礙物：測這一幀掃過的路徑有沒有撞進去，有的話箭矢卡在障礙物上
+// （回傳障礙物本身，呼叫端要負責把箭矢 attach 上去，才會跟著障礙物一起滑動）
+function findObstacleHit(prevPos, currPos) {
+  const obs = getSpecialObstacle()
+  if (!obs) return null
+  const boxMin = { x: obs.x - obs.halfW - ARROW_RADIUS, y: obs.y0, z: obs.z - obs.halfD - ARROW_RADIUS }
+  const boxMax = { x: obs.x + obs.halfW + ARROW_RADIUS, y: obs.y0 + obs.height, z: obs.z + obs.halfD + ARROW_RADIUS }
+  return segmentIntersectsBox(prevPos, currPos, boxMin, boxMax) ? obs : null
 }
 
 // 羽毛用弧形收尖的形狀，比單純長方形細緻，末端尖、根部圓潤貼著箭身
@@ -91,6 +125,16 @@ export class Arrow {
     this.velocity.y += GRAVITY * dt
     this.mesh.position.addScaledVector(this.velocity, dt)
     this._orient()
+
+    // Level 6 的移動障礙物：這一幀掃過的路徑撞進去了，箭矢卡在障礙物上，並且 attach 上去
+    // （障礙物本身會滑動，attach 之後箭矢會保持相對位置跟著一起動，不會插在半空中的固定點）
+    const obstacle = findObstacleHit(this.prevPos, this.mesh.position)
+    if (obstacle) {
+      this.stuck = true
+      this.age = 0
+      obstacle.mesh.attach(this.mesh)
+      return
+    }
 
     // 看台這類額外的檯面：這一幀從檯面上方掉到檯面高度以下，就卡在檯面上，不會直接穿過去
     const plat = findPlatformUnder(this.mesh.position.x, this.mesh.position.z)

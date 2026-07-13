@@ -5,7 +5,7 @@ import { Archer } from './archer.js'
 import { testArrowHit, TIER_AIM_NOISE } from './hitzones.js'
 import { AIController } from './ai.js'
 import { initAudio, sfx, music } from './sfx.js'
-import { buildEnvironment, updateEnvironment, getPlatformSpots, pickGroundSpot, getTerrainHeightAt, isWaterAt, getObstacles, LEVEL_COUNT, getOpponentStandY } from './scene.js'
+import { buildEnvironment, updateEnvironment, getPlatformSpots, pickGroundSpot, getTerrainHeightAt, isWaterAt, getObstacles, LEVEL_COUNT, getOpponentStandY, updateSpecialObstacle } from './scene.js'
 import { initDayNight, updateDayNight } from './daynight.js'
 import { updateWind, getWindSpeed } from './wind.js'
 import { updateBirds, spawnBirdFlushNear, spawnBirdOverCorridor, scareAwayBirdsOn, spawnBirdLineup, testArrowHitBird, killBird, clearBirds } from './birds.js'
@@ -15,12 +15,24 @@ import { spawnZombie, updateZombies, testArrowHitZombie, resetZombieBiteImmunity
 //  弓箭手對決（第一人稱瞄準 + 站定對戰）— M1+M2: 場景/相機 + 蓄力射箭
 // ============================================================
 
-// ---- 關卡系統：Level 1~10，越高關距離越遠、AI 對手命中率越高（15%→65% 線性遞增），
-//      每關場景/配色由 scene.js 的 THEMES 決定，Level 1 = 原本預設場景 ----
-function levelDuelDistance(level) { return 25 + (level - 1) * 3 }
+// ---- 關卡系統：Level 1~10，距離從 25m 每關 +3m 一路加到 Level 6 的 40m 就不再往上加
+//      （Level 6 開始改用移動障礙物增加難度，距離拉太遠反而讓箭矢彈道太難預判、不好玩），
+//      AI 對手命中率仍然每關線性提高到底（15%→65%）。每關場景/配色由 scene.js 的 THEMES 決定，
+//      Level 1 = 原本預設場景 ----
+const DUEL_DISTANCE_CAP_LEVEL = 6
+function levelDuelDistance(level) { return 25 + (Math.min(level, DUEL_DISTANCE_CAP_LEVEL) - 1) * 3 }
 function levelAiHitChance(level) { return 0.15 + (level - 1) * (0.5 / (LEVEL_COUNT - 1)) }
 
-let currentLevel = 1
+// 測試用：網址加 ?level=6 可以直接從指定關卡開始玩，不用每次都從 Level 1 一路破關才能測到後面的關卡
+function startingLevelFromUrl() {
+  try {
+    const n = parseInt(new URLSearchParams(location.search).get('level'), 10)
+    if (Number.isInteger(n) && n >= 1 && n <= LEVEL_COUNT) return n
+  } catch { /* 網址解析失敗就當作沒指定，用預設 Level 1 */ }
+  return 1
+}
+
+let currentLevel = startingLevelFromUrl()
 let DUEL_DISTANCE = levelDuelDistance(currentLevel)   // 雙方站位間距（公尺），隨關卡改變
 const EYE = new THREE.Vector3(0, 1.7, DUEL_DISTANCE / 2)   // 玩家眼睛位置（面向 -z），關卡切換時原地更新座標
 
@@ -815,6 +827,7 @@ function loop() {
   }
 
   if (playing && !paused) {
+    updateSpecialObstacle(dt)   // Level 6 的移動障礙物（其他關卡是 no-op），暫停時跟著停住不動
     if (armsRestT > 0) armsRestT = Math.max(0, armsRestT - dt)
     crosshairForbiddenEl.classList.toggle('show', armsRestT > 0)
 

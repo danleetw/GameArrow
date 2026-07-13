@@ -211,6 +211,38 @@ function terrainHeight(x, z) {
 
 let platformSpots = []   // {x, z, r}：觀戰高台位置，依 duelDistance 算出，避免樹木長到高台上
 let opponentStandY = 0   // Level 3 專用：對手站的矮台頂面高度，其餘關卡是 0（站地面）
+
+// Level 6 專用：雙方之間來回滑動的障礙物，製造視線遮蔽——箭矢飛太遠彈道太難預判，
+// 距離拉到這關就不再往上加（見 main.js 的 DUEL_DISTANCE_CAP_LEVEL），改用這個機制增加難度
+const MOVING_OBSTACLE_AMPLITUDE = 3      // 沿走廊 X 軸左右滑動的振幅（公尺），走廊半寬 4.2，留一點邊界
+const MOVING_OBSTACLE_PERIOD = 6         // 來回一次的週期（秒）
+let movingObstacle = null   // { mesh, halfW, halfD, y0, height, t, x }，其他關卡是 null（沒有障礙物）
+
+function buildMovingObstacle(scene) {
+  const w = 2.2, d = 0.6, h = 2.3
+  const mat = new THREE.MeshStandardMaterial({ color: 0xc98aa0, roughness: 0.8 })
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
+  mesh.position.set(0, h / 2, 0)
+  mesh.castShadow = true
+  mesh.receiveShadow = true
+  track(scene, mesh)
+  movingObstacle = { mesh, halfW: w / 2, halfD: d / 2, y0: 0, height: h, t: Math.random() * MOVING_OBSTACLE_PERIOD, x: 0 }
+}
+
+// 每幀呼叫：讓 Level 6 的移動障礙物沿走廊左右滑動（其他關卡是 no-op）
+export function updateSpecialObstacle(dt) {
+  if (!movingObstacle) return
+  movingObstacle.t += dt
+  const x = Math.sin(movingObstacle.t * (Math.PI * 2 / MOVING_OBSTACLE_PERIOD)) * MOVING_OBSTACLE_AMPLITUDE
+  movingObstacle.mesh.position.x = x
+  movingObstacle.x = x
+}
+
+// 給 arrow.js 用：目前這關的移動障礙物包圍盒（沒有就回傳 null），連 mesh 一起給，
+// 箭矢插進去時要 attach 上去，才會跟著障礙物一起滑動，而不是插在半空中一個固定點
+export function getSpecialObstacle() {
+  return movingObstacle
+}
 function isFreeSpot(x, z) {
   if (isInCorridor(x, z)) return false
   if (distToLake(x, z) < 1.4) return false
@@ -514,6 +546,7 @@ export function clearEnvironment() {
   clouds.length = 0
   platformSpots = []
   opponentStandY = 0
+  movingObstacle = null
 }
 
 // 主入口：建立整個場地（地形/水面/植被/道具）。duelDistance 用來算對戰走廊要留多長，
@@ -603,6 +636,9 @@ export function buildEnvironment(scene, renderer, duelDistance, level = 1) {
     track(scene, oppPlat)
     opponentStandY = surfaceY
   }
+
+  // Level 6 專屬：雙方之間的移動障礙物，沿走廊左右滑動，週期性擋住視線
+  if (level === 6) buildMovingObstacle(scene)
 
   // 風向旗：固定在玩家右前方 4 公尺（45 度角），跟站位距離無關，不會因為關卡拉開對戰距離而跑位
   const vaneOffset = 4 / Math.SQRT2
