@@ -51,6 +51,8 @@ function scoreForShot(n) {
   return Math.max(1, 10 - (n - 4))   // 第 4 箭 10 分，之後每多一箭少 1 分，最低 1 分
 }
 const DEFEAT_BONUS = 50   // 每打倒一位 AI 對手，額外加這麼多分（跟第幾箭致命的分數疊加）
+const ZOMBIE_KILL_SCORE = 10   // 玩家射死一隻殭屍（滿 3 箭）加這麼多分
+const BIRD_KILL_SCORE = 10     // 玩家射中一隻鳥加這麼多分
 let levelArrowCount = 0   // 這一關玩家已經射出的箭數（含沒命中的），setupLevel() 時歸零
 let runScore = 0          // 這次挑戰（從 Level 1 開始）累積的分數，回 Level 1 重新開始時歸零
 
@@ -63,6 +65,13 @@ try {
 } catch { /* 讀不到就用預設值 */ }
 function saveStats() {
   try { localStorage.setItem(STATS_KEY, JSON.stringify(stats)) } catch { /* 存不了就算了，不影響遊玩 */ }
+}
+
+// 加分共用邏輯：累加本次挑戰分數，順便更新/存最佳分數紀錄，HUD 同步刷新
+function addScore(points) {
+  runScore += points
+  if (runScore > stats.bestScore) { stats.bestScore = runScore; saveStats() }
+  updateStatsHud()
 }
 
 // ---- 開場空拍機運鏡：起飛遠離 → 繞場地一圈 → 飛回第一人稱視角。每一關都會播放（除非玩家在
@@ -136,13 +145,16 @@ let charging = false
 let chargeT = 0
 let currentDrawPower = 0   // 每幀更新，蓄力飄動時 fireUp() 要用「當下顯示的」蓄力，不能重算一次乾淨值
 
-// ---- 慢動作：AI 對手真的瞄準玩家頭部（幾乎會命中）的那一箭，飛到玩家 5 公尺內時放慢時間流速，
-//      讓玩家看得清楚箭的來向；只要有這樣的箭還在 5 公尺內就持續生效，箭一旦命中/插地/飛遠就
+// ---- 慢動作：AI 對手真的瞄準玩家頭部（幾乎會命中）的那一箭，飛到玩家 9 公尺內時放慢時間流速，
+//      讓玩家看得清楚箭的來向；只要有這樣的箭還在 9 公尺內就持續生效，箭一旦命中/插地/飛遠就
 //      解除，不是固定播放一段時間。timeScale 只套用在戰鬥相關的更新（箭矢/角色/殭屍/AI/攝影機
-//      飄動衰減），環境/風/日夜等背景系統維持正常速度，避免整個畫面看起來像卡格 ----
-const SLOWMO_TRIGGER_DIST = 5
-const SLOWMO_TARGET_SCALE = 0.25
-const SLOWMO_EASE_SPEED = 8   // 時間流速趨近目標值的平滑速度（越大切換越快）
+//      飄動衰減），環境/風/日夜等背景系統維持正常速度，避免整個畫面看起來像卡格。
+//      箭速 26~52 m/s、原本 5 公尺+0.25 倍速幾乎一瞬間就飛完，慢動作根本來不及被感覺到，
+//      這裡把觸發距離拉遠到 9 公尺、時間流速也放慢到 0.15 倍，並加快趨近速度讓減速幾乎
+//      是觸發當下就到位，不是龜速淡入才慢下來 ----
+const SLOWMO_TRIGGER_DIST = 9
+const SLOWMO_TARGET_SCALE = 0.15
+const SLOWMO_EASE_SPEED = 10   // 時間流速趨近目標值的平滑速度（越大切換越快）
 let timeScale = 1
 function updateSlowMotion(rawDt) {
   let threatNear = false
@@ -448,9 +460,7 @@ function handleHit(target, hit, arrow) {
     aiController.onHit(hit.tier)
   }
   if (target === aiArcher && result.fatal && arrow) {
-    runScore += scoreForShot(arrow.shotNumber) + DEFEAT_BONUS
-    if (runScore > stats.bestScore) { stats.bestScore = runScore; saveStats() }
-    updateStatsHud()
+    addScore(scoreForShot(arrow.shotNumber) + DEFEAT_BONUS)
   }
   triggerHitCut(target, result.fatal)
   if (result.fatal) sfx.death()
@@ -915,9 +925,11 @@ function loop() {
         a.mesh.position.copy(birdHit.mesh.position)
         birdHit.mesh.attach(a.mesh)
         killBird(birdHit)
+        if (a.ownerSide === 'player') addScore(BIRD_KILL_SCORE)
         continue
       }
-      // 再測試有沒有打中殭屍：命中會插在殭屍身上、記一次命中並讓殭屍鎖定射手
+      // 再測試有沒有打中殭屍：命中會插在殭屍身上、記一次命中並讓殭屍鎖定射手；
+      // 命中後如果殭屍狀態變成 dying，代表這箭正好是滿 3 箭的致命一擊，才算玩家射死一隻殭屍
       const zombieHit = testArrowHitZombie(a.prevPos, a.mesh.position, ARROW_RADIUS)
       if (zombieHit) {
         a.stuck = true
@@ -925,6 +937,7 @@ function loop() {
         a.mesh.position.copy(zombieHit.mesh.position)
         zombieHit.mesh.attach(a.mesh)
         zombieHit.onHitByArrow({ playerArcher, aiArcher, playerPos: _playerPosTmp, aiPos: _aiPosTmp })
+        if (a.ownerSide === 'player' && zombieHit.state === 'dying') addScore(ZOMBIE_KILL_SCORE)
         continue
       }
       const target = a.ownerSide === 'player' ? aiArcher : playerArcher
