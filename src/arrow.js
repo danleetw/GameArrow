@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { getWindVector } from './wind.js'
-import { getPlatformSpots, getSpecialObstacle } from './scene.js'
+import { getPlatformSpots, getSpecialObstacle, getCampfireUpdraft } from './scene.js'
 
 export const GRAVITY = -9.82
 export const CHARGE_TIME = 0.9
@@ -33,6 +33,10 @@ function segmentIntersectsBox(p0, p1, boxMin, boxMax) {
     [p0.z, dz, boxMin.z, boxMax.z],
   ]
   for (const [o, d, mn, mx] of axes) {
+    // 包圍盒座標算壞掉變成 NaN 的話，NaN 比較永遠是 false，會讓下面的排除判斷全部失效、
+    // 誤判成「每一段都相交」（曾經因為障礙物物件漏寫一個座標軸就這樣壞過，箭一射出去就卡住）——
+    // 這裡直接擋掉，壞資料就當作沒相交，不要讓箭矢憑空卡在半空中
+    if (!Number.isFinite(mn) || !Number.isFinite(mx)) return false
     if (Math.abs(d) < 1e-9) {
       if (o < mn || o > mx) return false
     } else {
@@ -123,6 +127,7 @@ export class Arrow {
     this.velocity.x += wind.x * WIND_ACCEL * dt
     this.velocity.z += wind.z * WIND_ACCEL * dt
     this.velocity.y += GRAVITY * dt
+    this.velocity.y += getCampfireUpdraft(this.mesh.position.x, this.mesh.position.y, this.mesh.position.z) * dt
     this.mesh.position.addScaledVector(this.velocity, dt)
     this._orient()
 
@@ -220,6 +225,7 @@ export class TrajectoryPreview {
       v.x += wind.x * WIND_ACCEL * step
       v.z += wind.z * WIND_ACCEL * step
       v.y += GRAVITY * step
+      v.y += getCampfireUpdraft(p.x, p.y, p.z) * step
       prevY = p.y
       p.addScaledVector(v, step)
       const plat = findPlatformUnder(p.x, p.z)

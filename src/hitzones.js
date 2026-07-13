@@ -1,10 +1,10 @@
 import * as THREE from 'three'
 
-// 14 個命中判定區：頭/胸致命，大臂+大腿重傷，小臂+小腿中傷，手掌+腳掌輕傷
+// 14 個命中判定區：頭部致命，胸口/大臂+大腿重傷，小臂+小腿中傷，手掌+腳掌輕傷
 // radius 對應 archer.js 建構身體節段時使用的膠囊半徑，兩邊必須一致（視覺模型本身就是命中框）
 export const HIT_ZONES = {
   head:       { tier: 'fatal',  damage: Infinity, radius: 0.15 },
-  chest:      { tier: 'fatal',  damage: Infinity, radius: 0.20 },
+  chest:      { tier: 'heavy',  damage: 50, radius: 0.20 },
   upperArm_L: { tier: 'heavy',  damage: 45, radius: 0.08 },
   upperArm_R: { tier: 'heavy',  damage: 45, radius: 0.08 },
   thigh_L:    { tier: 'heavy',  damage: 45, radius: 0.11 },

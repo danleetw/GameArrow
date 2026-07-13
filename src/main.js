@@ -23,10 +23,16 @@ const DUEL_DISTANCE_CAP_LEVEL = 6
 function levelDuelDistance(level) { return 25 + (Math.min(level, DUEL_DISTANCE_CAP_LEVEL) - 1) * 3 }
 function levelAiHitChance(level) { return 0.15 + (level - 1) * (0.5 / (LEVEL_COUNT - 1)) }
 
-// 測試用：網址加 ?level=6 可以直接從指定關卡開始玩，不用每次都從 Level 1 一路破關才能測到後面的關卡
+// 測試用：網址加 ?level=6 可以直接從指定關卡開始玩，不用每次都從 Level 1 一路破關才能測到後面的關卡。
+// 參數名稱不分大小寫（?level= 或 ?LEVEL= 都認得），避免手動打網址時大小寫不一致就讀不到
 function startingLevelFromUrl() {
   try {
-    const n = parseInt(new URLSearchParams(location.search).get('level'), 10)
+    const params = new URLSearchParams(location.search)
+    let raw = null
+    for (const [key, value] of params) {
+      if (key.toLowerCase() === 'level') { raw = value; break }
+    }
+    const n = parseInt(raw, 10)
     if (Number.isInteger(n) && n >= 1 && n <= LEVEL_COUNT) return n
   } catch { /* 網址解析失敗就當作沒指定，用預設 Level 1 */ }
   return 1
@@ -130,6 +136,24 @@ let charging = false
 let chargeT = 0
 let currentDrawPower = 0   // 每幀更新，蓄力飄動時 fireUp() 要用「當下顯示的」蓄力，不能重算一次乾淨值
 
+// ---- 慢動作：AI 對手真的瞄準玩家頭部（幾乎會命中）的那一箭，飛到玩家 5 公尺內時放慢時間流速，
+//      讓玩家看得清楚箭的來向；只要有這樣的箭還在 5 公尺內就持續生效，箭一旦命中/插地/飛遠就
+//      解除，不是固定播放一段時間。timeScale 只套用在戰鬥相關的更新（箭矢/角色/殭屍/AI/攝影機
+//      飄動衰減），環境/風/日夜等背景系統維持正常速度，避免整個畫面看起來像卡格 ----
+const SLOWMO_TRIGGER_DIST = 5
+const SLOWMO_TARGET_SCALE = 0.25
+const SLOWMO_EASE_SPEED = 8   // 時間流速趨近目標值的平滑速度（越大切換越快）
+let timeScale = 1
+function updateSlowMotion(rawDt) {
+  let threatNear = false
+  for (const a of arrowManager.arrows) {
+    if (a.ownerSide !== 'ai' || a.stuck || a.dead || !a.headshotThreat) continue
+    if (a.mesh.position.distanceTo(EYE) <= SLOWMO_TRIGGER_DIST) { threatNear = true; break }
+  }
+  const target = threatNear ? SLOWMO_TARGET_SCALE : 1
+  timeScale += (target - timeScale) * Math.min(1, SLOWMO_EASE_SPEED * rawDt)
+}
+
 // ---- 風速越大，蓄力飄動／準星飄動的幅度越大：兩種飄動共用同一個風速強度係數 ----
 const WIND_SPEED_MAX = 4.5   // 要跟 wind.js 的風速上限一致
 const WIND_AMP_BONUS = 0.7   // 滿風速時幅度再放大到 1.7 倍
@@ -157,6 +181,7 @@ let armsRestT = 0
 //      CameraRig.getAimDirection() 自動疊加，預覽彈道跟真正放箭方向都會反映飄動結果 ----
 const SWAY_AMP_MIN = 0.012, SWAY_AMP_MAX = 0.028   // 弧度，約 0.7°~1.6°，再依風速放大
 const SWAY_FREQ_MIN = 1.1, SWAY_FREQ_MAX = 2.4
+const RELEASE_SWAY_SCALE = 2 / 3   // 放箭瞬間，準星飄動對實際射出方向的影響縮小 1/3
 
 function shotOrigin() {
   // 箭矢從眼睛位置往視線方向前移一點出發，避免箭頭一開始卡在相機視野裡
@@ -199,12 +224,14 @@ function fireUp() {
   charging = false
   trajectoryPreview.hide()
   powerFillEl.style.width = '0%'
-  cameraRig.stopSway()
   // 用當下顯示的蓄力值（已經被飄動修正過），但保底 0.12——極快速點放連 loop 都還沒跑到一次時，
   // currentDrawPower 還停在 fireDown() 剛重置的 0，不加保底會打出去等於沒蓄力的箭
   const power = Math.max(0.12, currentDrawPower)
   const speed = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * power
-  const dir = cameraRig.getAimDirection()   // 已內建目前的準星飄動偏移
+  // 放箭當下的準星飄動要在 stopSway() 歸零之前先取樣，飄動幅度打 RELEASE_SWAY_SCALE 折扣——
+  // 放開瞬間抓的時機還是有意義（飄動仍會影響落點），但不用完全靠運氣賭飄動剛好歸零那一瞬間
+  const dir = cameraRig.getAimDirection(undefined, 0, 0, RELEASE_SWAY_SCALE)
+  cameraRig.stopSway()
   levelArrowCount++
   const arrow = arrowManager.spawn(shotOrigin(), dir, speed, 'player')
   arrow.shotNumber = levelArrowCount   // 這一關的第幾箭，命中/致命時算分要用
@@ -525,11 +552,13 @@ function restartMatch(level = currentLevel, { requestLock = true } = {}) {
   resultEl.classList.add('hidden')
   updateHpHud()
   armsRestT = 0   // 中途重開/換關不該延續上一局剩下的休息懲罰
+  timeScale = 1   // 中途重開/換關不該延續上一局殘留的慢動作
   crosshairForbiddenEl.classList.remove('show')
   if (!requestLock) return   // 回選單用的重置：不搶滑鼠鎖定、不播運鏡，維持在選單畫面
   if (!IS_TOUCH) cameraRig.requestLock()
   if (levelChanged) {
     spawnBirdFlushNear(scene, PLAYER_POS)   // 進新關卡比照開場，來一隻鳥驚飛增加臨場感
+    spawnStartZombie()   // 比照開場，新關卡也至少放一隻殭屍在場上
     beginGameplayView()   // 換到新關卡：比照開場，播一次空拍運鏡（除非玩家關掉）
   } else {
     _revealGameplayHud()   // 重新挑戰同一關：不用再飛一次，直接留在第一人稱
@@ -604,6 +633,12 @@ function beginGameplayView() {
   }
 }
 
+// 開場就在空地上生成一隻殭屍（跟按 G debug 用的邏輯一樣），讓玩家一開始就看得到殭屍在場上
+function spawnStartZombie() {
+  const spot = pickGroundSpot(35, 35, true)
+  if (spot) spawnZombie(scene, spot.x, spot.z, getTerrainHeightAt(spot.x, spot.z))
+}
+
 function startDuel() {
   initAudio()
   music.start()
@@ -614,6 +649,7 @@ function startDuel() {
   camera.updateProjectionMatrix()
   updateHpHud()
   spawnBirdFlushNear(scene, PLAYER_POS)   // 開場就有一隻鳥從主角附近驚飛，馬上看得到效果
+  spawnStartZombie()   // 開場也至少放一隻殭屍在場上
   // 瀏覽器只允許在使用者「直接點擊」當下鎖定滑鼠，晚一點用計時器觸發會被悄悄擋掉，
   // 所以要在這個按鈕點擊的當下就先鎖定，不管有沒有播運鏡都不用再鎖一次
   if (!IS_TOUCH) cameraRig.requestLock()
@@ -796,15 +832,17 @@ onResize()
 const clock = new THREE.Clock()
 function loop() {
   requestAnimationFrame(loop)
-  const dt = Math.min(clock.getDelta(), 0.05)
+  const rawDt = Math.min(clock.getDelta(), 0.05)
+  updateSlowMotion(rawDt)
+  const dt = rawDt * timeScale   // 慢動作只縮放戰鬥相關的更新，下面環境/背景系統一律用 rawDt
 
   updateDayNight(camera.position)
-  updateWind(dt)
-  updateEnvironment(dt)
-  updateBirds(dt, scene, [playerArcher, aiArcher])
+  updateWind(rawDt)
+  updateEnvironment(rawDt)
+  updateBirds(rawDt, scene, [playerArcher, aiArcher])
 
   if (playing && !paused) {
-    overheadBirdT -= dt
+    overheadBirdT -= rawDt
     if (overheadBirdT <= 0) {
       overheadBirdT = 10
       spawnBirdOverCorridor(scene, DUEL_DISTANCE)
@@ -813,7 +851,7 @@ function loop() {
 
   if (playing && introActive) {
     if (!paused) {
-      introT += dt
+      introT += rawDt
       updateIntroCamera(introT / INTRO_DUR)
       if (introT >= INTRO_DUR) endIntro()   // 這裡面會呼叫 _revealGameplayHud() 讓小視窗框現身
     }
@@ -827,7 +865,7 @@ function loop() {
   }
 
   if (playing && !paused) {
-    updateSpecialObstacle(dt)   // Level 6 的移動障礙物（其他關卡是 no-op），暫停時跟著停住不動
+    updateSpecialObstacle(dt)   // Level 6 移動障礙物／Level 8 營火煙霧（其他關卡是 no-op），暫停時跟著停住不動
     if (armsRestT > 0) armsRestT = Math.max(0, armsRestT - dt)
     crosshairForbiddenEl.classList.toggle('show', armsRestT > 0)
 

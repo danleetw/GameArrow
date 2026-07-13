@@ -37,6 +37,7 @@ const CORPSE_LIFETIME = 3     // 死亡倒地後停留幾秒才消失
 const MAX_ZOMBIES = 10        // 場上同時存在的殭屍上限（只算還活著的，死亡倒地/消失中的不佔名額）
 const BITE_IMMUNITY_THRESHOLD = 2   // 累積被咬滿這麼多口，就進入免疫期
 const BITE_IMMUNITY_DURATION = 60   // 免疫期長度（秒）
+const STUCK_TIMEOUT = 20      // 連續這麼多秒規劃移動卻一直卡在原地（撲咬中不算），就強制換行為模式跟繞路方向
 const UP = new THREE.Vector3(0, 1, 0)
 
 let gameClock = 0
@@ -144,6 +145,7 @@ export class Zombie {
     this.hopFromY = y   // 起跳/落地地形高度，避免剛生成在非平地時第一跳飛在半空或陷進地面
     this.hopToY = y
     this.steerSign = 0   // 攻擊模式被擋住時，繞路要往哪邊偏（左/右），選定後盡量保持一致不要來回抖動
+    this.stuckT = 0   // 累積「規劃了移動卻沒有真的移動」的秒數，撲咬中不算，滿 STUCK_TIMEOUT 就強制換行為
     this.seekBiteCount = 0   // 一般攻擊模式（seek 咬到的）已經咬了幾口
     this.seekBiteLimit = 1
     this._flashT = 0
@@ -338,9 +340,31 @@ export class Zombie {
   }
 
   _finishHopPlan(ctx, dest) {
+    // 撲咬原地不動是刻意的，不算卡住；其他情況規劃出來的目的地跟起點幾乎沒動，代表這一跳
+    // 被四面擋死/繞路失敗，累積卡住時間，滿 STUCK_TIMEOUT 秒就強制換行為模式跟繞路方向
+    if (!this.isAttackHop) {
+      if (dest.distanceTo(this.hopFrom) > 0.05) this.stuckT = 0
+      else {
+        this.stuckT += HOP_PERIOD
+        if (this.stuckT >= STUCK_TIMEOUT) this._breakStuck()
+      }
+    }
     this.hopTo.copy(dest)
     this.hopFromY = ctx.getGroundHeight(this.hopFrom.x, this.hopFrom.z)
     this.hopToY = ctx.getGroundHeight(this.hopTo.x, this.hopTo.z)
+  }
+
+  // 卡住太久（一直找不到路可以走）：強制放棄目前鎖定的目標並改成閒晃離開（wander/leave 模式
+  // 本來就每跳隨機選方向，不用特別處理），繞路方向重新隨機選一次，逼牠從下一跳開始換個方式
+  // 找路，而不是一直對著同一個走不到的目標鑽牛角尖
+  _breakStuck() {
+    this.stuckT = 0
+    this.steerSign = Math.random() < 0.5 ? 1 : -1
+    if (this.mode === 'attack' || this.mode === 'seek') {
+      this._startLeaving()
+    } else {
+      this.decideT = 0   // 逼下一幀立刻重新擲骰，換一種行為模式
+    }
   }
 
   _doAttack(ctx) {

@@ -60,6 +60,7 @@ export class AIController {
     this.dir = new THREE.Vector3(0, 0, 1)
     this.speed = SPEED_MIN
     this.hitChance = DEFAULT_HIT_CHANCE
+    this.headshotThreat = false   // 這一箭是不是「真的瞄準」對手頭部的那一箭，給 main.js 判斷要不要觸發慢動作
   }
 
   // 關卡切換時呼叫：更新這個 AI 對手的固定命中機率（0~1）
@@ -135,7 +136,8 @@ export class AIController {
 
     // 每次拉弓只擲骰一次（不連續抖動），決定這一箭是命中機率裡「真的瞄準」的那次，
     // 還是刻意偏出去的那次；同一箭全程用同一組誤差，讀起來像刻意瞄準/失手而不是手抖
-    if (Math.random() < this.hitChance) {
+    const isTrueAim = Math.random() < this.hitChance
+    if (isTrueAim) {
       dir.x += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
       dir.y += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
       dir.z += (Math.random() - 0.5) * 2 * TRUE_AIM_ERROR
@@ -148,6 +150,8 @@ export class AIController {
     }
     dir.normalize()
     this.dir.copy(dir)
+    // 真的瞄準頭部、大概率會命中的那一箭，main.js 會在箭飛近玩家 5 公尺內時觸發慢動作
+    this.headshotThreat = isTrueAim && zoneName === 'head'
 
     this.chargeGoal = randRange(this.cfg.chargeMin, this.cfg.chargeMax)
     this.chargeT = 0
@@ -155,7 +159,8 @@ export class AIController {
   }
 
   _release() {
-    this.arrowManager.spawn(this.origin.clone(), this.dir, this.speed, 'ai')
+    const arrow = this.arrowManager.spawn(this.origin.clone(), this.dir, this.speed, 'ai')
+    arrow.headshotThreat = this.headshotThreat
     sfx.release()
     this.archer.setDrawPower(0)
     this.state = STATE.COOLDOWN

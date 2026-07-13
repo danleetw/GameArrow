@@ -61,7 +61,8 @@ const smoothstep = (t) => { t = Math.max(0, Math.min(1, t)); return t * t * (3 -
 // ============================================================
 //  關卡主題：10 關由淺入深——森林 → 秋楓 → 雪原 → 荒漠 → 熔岩 → 櫻花 → 沼澤 → 極光雪峰
 //  → 水晶秘境 → 終焉競技場。越高關越華麗（發光道具、更密的植被、專屬造景），
-//  第 1 關維持跟原本一模一樣的種子與配色，畫面完全不變。
+//  第 1 關維持跟原本一模一樣的種子與配色（地形/湖泊/河流/植被不變），只在玩家左手邊
+//  另外加了一叢裝飾營火堆點綴場景，不影響原本的佈局。
 // ============================================================
 export const LEVEL_COUNT = 10
 const THEMES = [
@@ -218,6 +219,16 @@ const MOVING_OBSTACLE_AMPLITUDE = 3      // 沿走廊 X 軸左右滑動的振幅
 const MOVING_OBSTACLE_PERIOD = 6         // 來回一次的週期（秒）
 let movingObstacle = null   // { mesh, halfW, halfD, y0, height, t, x }，其他關卡是 null（沒有障礙物）
 
+// 營火：Level 8 在雙方正中央放一座「會飄煙擋視線＋熱氣推箭」的湊局營火；Level 1 在玩家左手邊
+// 放一叢純裝飾的營火堆（沒有煙霧/熱氣效果，只是場景點綴）。campfires 是所有目前這關營火的清單，
+// 每座各自有自己的位置/火焰閃爍狀態，共用同一套建造/更新函式
+const CAMPFIRE_SMOKE_COUNT = 26
+const CAMPFIRE_RISE_HEIGHT = 4.6   // 煙粒子從燃起到消散總共上升的高度（公尺）
+const CAMPFIRE_UPDRAFT_RADIUS = 1.7   // 熱氣柱水平範圍（公尺），離火堆中心越遠推力越弱
+const CAMPFIRE_UPDRAFT_MIN_Y = 0.3, CAMPFIRE_UPDRAFT_MAX_Y = 4.5   // 熱氣柱垂直範圍
+const CAMPFIRE_UPDRAFT_ACCEL = 9   // 箭矢飛進熱氣柱正中心時額外疊加的向上加速度（m/s²）
+let campfires = []   // { x, z, flameMeshes, light, smoke, withUpdraft, flicker }[]，其他關卡是空陣列
+
 function buildMovingObstacle(scene) {
   const w = 2.2, d = 0.6, h = 2.3
   const mat = new THREE.MeshStandardMaterial({ color: 0xc98aa0, roughness: 0.8 })
@@ -226,22 +237,188 @@ function buildMovingObstacle(scene) {
   mesh.castShadow = true
   mesh.receiveShadow = true
   track(scene, mesh)
-  movingObstacle = { mesh, halfW: w / 2, halfD: d / 2, y0: 0, height: h, t: Math.random() * MOVING_OBSTACLE_PERIOD, x: 0 }
+  movingObstacle = { mesh, halfW: w / 2, halfD: d / 2, y0: 0, height: h, t: Math.random() * MOVING_OBSTACLE_PERIOD, x: 0, z: 0 }
 }
 
-// 每幀呼叫：讓 Level 6 的移動障礙物沿走廊左右滑動（其他關卡是 no-op）
+// 柔邊圓形煙霧貼圖：純程序生成的放射狀漸層，中心亮、邊緣透明，疊很多張才會像一團煙
+function buildSmokeTexture() {
+  const s = 64, c = document.createElement('canvas'); c.width = c.height = s
+  const ctx = c.getContext('2d')
+  const grad = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2)
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)')
+  grad.addColorStop(0.5, 'rgba(225,225,232,0.45)')
+  grad.addColorStop(1, 'rgba(225,225,232,0)')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, s, s)
+  return new THREE.CanvasTexture(c)
+}
+
+// 營火本體：交疊的木柴＋圍石＋雙層火焰錐，跟 buildBrazier() 同一種風格但沒有立柱，直接坐地上
+function buildCampfireBase(g) {
+  const logMat = new THREE.MeshStandardMaterial({ color: 0x2a1c12, roughness: 0.9 })
+  const logGeo = new THREE.CylinderGeometry(0.08, 0.1, 0.85, 6)
+  for (let i = 0; i < 4; i++) {
+    const log = new THREE.Mesh(logGeo, logMat)
+    log.rotation.z = Math.PI / 2
+    log.rotation.y = i * (Math.PI / 4) + Math.PI / 8
+    log.position.y = 0.09 + (i % 2) * 0.05
+    log.castShadow = true
+    g.add(log)
+  }
+  const stoneMat = new THREE.MeshStandardMaterial({ color: 0x6a6258, roughness: 0.95, flatShading: true })
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    const stone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.1 + rand() * 0.05, 0), stoneMat)
+    stone.position.set(Math.cos(a) * 0.55, 0.06, Math.sin(a) * 0.55)
+    stone.rotation.set(rand() * Math.PI, rand() * Math.PI, 0)
+    stone.castShadow = true
+    g.add(stone)
+  }
+
+  const flameMeshes = []
+  const flameColors = [0xffb347, 0xff6a1a]
+  for (let i = 0; i < 2; i++) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: flameColors[i], emissive: flameColors[i], emissiveIntensity: 1.4, roughness: 0.3, transparent: true, opacity: 0.9,
+    })
+    const h = 0.5 - i * 0.14
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.22 - i * 0.06, h, 8), mat)
+    flame.position.y = 0.16 + h / 2
+    g.add(flame)
+    flameMeshes.push(flame)
+  }
+
+  const light = new THREE.PointLight(0xff7a2a, 7, 9, 2)
+  light.position.y = 0.6
+  g.add(light)
+
+  return { flameMeshes, light }
+}
+
+// 建一座營火：預設是 Level 8 那種正中央、會飄煙擋視線＋推箭的湊局款；opts 可以關掉煙霧/熱氣、
+// 換位置、換避障半徑，蓋出 Level 1 那種純裝飾、放在旁邊不影響瞄準的款式
+function buildCampfireScene(scene, opts = {}) {
+  const { x = 0, z = 0, withSmoke = true, withUpdraft = true, avoidRadius = 2.5 } = opts
+  const y = terrainHeight(x, z)
+
+  const g = new THREE.Group()
+  g.position.set(x, y, z)
+  const { flameMeshes, light } = buildCampfireBase(g)
+  track(scene, g)
+
+  let smoke = null
+  if (withSmoke) {
+    const smokeGroup = new THREE.Group()
+    smokeGroup.position.set(x, y, z)
+    const tex = buildSmokeTexture()
+    smoke = []
+    for (let i = 0; i < CAMPFIRE_SMOKE_COUNT; i++) {
+      const mat = new THREE.SpriteMaterial({ map: tex, color: 0xd8dce4, transparent: true, depthWrite: false, opacity: 0 })
+      const sprite = new THREE.Sprite(mat)
+      sprite.position.set(0, 0.55, 0)
+      smokeGroup.add(sprite)
+      smoke.push({
+        sprite,
+        age: rand() * 7,
+        maxLife: 5.5 + rand() * 2.5,
+        seed: rand() * Math.PI * 2,
+        baseX: (rand() - 0.5) * 0.3,
+        baseZ: (rand() - 0.5) * 0.3,
+      })
+    }
+    track(scene, smokeGroup)
+  }
+
+  if (avoidRadius > 0) obstacleSpots.push({ x, z, r: avoidRadius })   // 殭屍靠近火堆這個範圍內會被當成障礙物擋住，自動繞開走
+  campfires.push({ x, z, flameMeshes, light, smoke, withUpdraft, flicker: rand() * 10 })
+}
+
+// Level 1 專用：在玩家左手邊（負 X，跟湖泊固定同一側是不同區域，見場地佈局註解）擺一叢
+// 三座湊在一起的裝飾營火，純視覺點綴，不影響瞄準視線也不會推箭；避障半徑刻意拉大到
+// CAMPFIRE_CLUSTER_AVOID_RADIUS，讓靠近玩家這側的火堆繞開範圍能延伸到玩家附近，
+// 殭屍從這個方向靠近時會提早被撥開，不是非要走到貼身才繞路
+const CAMPFIRE_CLUSTER_AVOID_RADIUS = 3
+function buildDecorativeCampfireCluster(scene, cx, cz) {
+  const offsets = [[0, 0], [1.3, 0.8], [-1.1, 1.0]]
+  for (const [ox, oz] of offsets) {
+    buildCampfireScene(scene, { x: cx + ox, z: cz + oz, withSmoke: false, withUpdraft: false, avoidRadius: CAMPFIRE_CLUSTER_AVOID_RADIUS })
+  }
+}
+
+// 每幀呼叫：讓 Level 6 的移動障礙物沿走廊左右滑動、所有營火的火焰閃爍＋（有煙霧的話）煙粒子
+// 上升擴散隨風漂移（沒有營火的關卡兩者皆是 no-op）
 export function updateSpecialObstacle(dt) {
-  if (!movingObstacle) return
-  movingObstacle.t += dt
-  const x = Math.sin(movingObstacle.t * (Math.PI * 2 / MOVING_OBSTACLE_PERIOD)) * MOVING_OBSTACLE_AMPLITUDE
-  movingObstacle.mesh.position.x = x
-  movingObstacle.x = x
+  if (movingObstacle) {
+    movingObstacle.t += dt
+    const x = Math.sin(movingObstacle.t * (Math.PI * 2 / MOVING_OBSTACLE_PERIOD)) * MOVING_OBSTACLE_AMPLITUDE
+    movingObstacle.mesh.position.x = x
+    movingObstacle.x = x
+  }
+  if (campfires.length > 0) updateCampfires(dt)
+}
+
+function updateCampfires(dt) {
+  // 把風拆成「沿風向」跟「垂直風向」兩個分量：煙柱主體沿風向被吹走（風越大飄越遠、
+  // 越老的煙飄得越久），垂直方向只疊一點點小亂流讓煙柱看起來自然，不是死板一直線
+  const windAngle = getWindAngle()
+  const windSpeed = getWindSpeed()
+  const windDirX = Math.cos(windAngle), windDirZ = Math.sin(windAngle)
+  const perpX = -windDirZ, perpZ = windDirX
+
+  for (const cf of campfires) {
+    cf.flicker += dt
+    const t9 = Math.sin(cf.flicker * 9)
+    const flick = 0.85 + t9 * 0.1 + Math.sin(cf.flicker * 23) * 0.05
+    for (const flame of cf.flameMeshes) flame.scale.set(flick, 0.9 + (flick - 0.85) * 1.4, flick)
+    cf.light.intensity = 6 + t9 * 1.2 + Math.sin(cf.flicker * 17) * 0.8
+    if (!cf.smoke) continue
+
+    for (const p of cf.smoke) {
+      p.age += dt
+      let t = p.age / p.maxLife
+      if (t >= 1) {
+        p.age = 0; t = 0
+        p.maxLife = 5.5 + rand() * 2.5
+        p.seed = rand() * Math.PI * 2
+        p.baseX = (rand() - 0.5) * 0.3
+        p.baseZ = (rand() - 0.5) * 0.3
+      }
+      const rise = CAMPFIRE_RISE_HEIGHT * t
+      const along = t * t * (0.8 + windSpeed * 1.6)
+      const cross = Math.sin(p.age * 1.3 + p.seed) * 0.3 * t
+      p.sprite.position.set(
+        p.baseX + windDirX * along + perpX * cross,
+        0.55 + rise,
+        p.baseZ + windDirZ * along + perpZ * cross
+      )
+      const scale = 0.3 + t * 1.5
+      p.sprite.scale.set(scale, scale, 1)
+      p.sprite.material.opacity = Math.sin(Math.min(t, 1) * Math.PI) * 0.5
+    }
+  }
 }
 
 // 給 arrow.js 用：目前這關的移動障礙物包圍盒（沒有就回傳 null），連 mesh 一起給，
 // 箭矢插進去時要 attach 上去，才會跟著障礙物一起滑動，而不是插在半空中一個固定點
 export function getSpecialObstacle() {
   return movingObstacle
+}
+
+// 給 arrow.js 用：箭矢飛過有開熱氣效果的營火（目前只有 Level 8 中央那座）正上方時，額外疊加
+// 的向上加速度——沒有這種營火、或箭矢不在熱氣柱範圍內都回傳 0，離火堆中心越遠推力越弱，
+// 讓箭矢稍微被推升一點，不是硬轉向；蓄力預覽彈道（TrajectoryPreview）也會套用同一個函式，
+// 玩家看得到彈道被推起來
+export function getCampfireUpdraft(x, y, z) {
+  if (y < CAMPFIRE_UPDRAFT_MIN_Y || y > CAMPFIRE_UPDRAFT_MAX_Y) return 0
+  let best = 0
+  for (const cf of campfires) {
+    if (!cf.withUpdraft) continue
+    const d = Math.hypot(x - cf.x, z - cf.z)
+    if (d > CAMPFIRE_UPDRAFT_RADIUS) continue
+    const v = CAMPFIRE_UPDRAFT_ACCEL * (1 - d / CAMPFIRE_UPDRAFT_RADIUS)
+    if (v > best) best = v
+  }
+  return best
 }
 function isFreeSpot(x, z) {
   if (isInCorridor(x, z)) return false
@@ -547,6 +724,7 @@ export function clearEnvironment() {
   platformSpots = []
   opponentStandY = 0
   movingObstacle = null
+  campfires = []
 }
 
 // 主入口：建立整個場地（地形/水面/植被/道具）。duelDistance 用來算對戰走廊要留多長，
@@ -640,6 +818,13 @@ export function buildEnvironment(scene, renderer, duelDistance, level = 1) {
   // Level 6 專屬：雙方之間的移動障礙物，沿走廊左右滑動，週期性擋住視線
   if (level === 6) buildMovingObstacle(scene)
 
+  // Level 8 專屬：雙方正中央升起一團營火，飄出的煙霧會隨風擴散漂移，短暫遮蔽瞄準視線
+  if (level === 8) buildCampfireScene(scene)
+
+  // Level 1 專屬：玩家左手邊（負 X）擺一叢裝飾用的營火堆，純點綴、不影響瞄準視線——
+  // 特意貼近玩家站位（跟玩家同一個 z），讓避障範圍能罩到玩家附近
+  if (level === 1) buildDecorativeCampfireCluster(scene, -(CORRIDOR_HALF_W + 1.3), archerZ)
+
   // 風向旗：固定在玩家右前方 4 公尺（45 度角），跟站位距離無關，不會因為關卡拉開對戰距離而跑位
   const vaneOffset = 4 / Math.SQRT2
   buildWindVane(scene, vaneOffset, archerZ - vaneOffset)
@@ -724,6 +909,41 @@ function buildClouds(scene) {
   }
 }
 
+// 風向旗貼圖：程序生成中華民國國旗（青天白日滿地紅）——紅地，左上角青天（藍色四分之一區塊），
+// 青天正中央疊一個十二道光芒的白日（12 道白色尖角光芒間隔 12 個藍色缺口，中心一個白色圓餅）
+function buildFlagTexture() {
+  const w = 300, h = 180
+  const c = document.createElement('canvas'); c.width = w; c.height = h
+  const ctx = c.getContext('2d')
+  ctx.fillStyle = '#fe0000'
+  ctx.fillRect(0, 0, w, h)
+
+  const cantonW = w / 2, cantonH = h / 2
+  ctx.fillStyle = '#000095'
+  ctx.fillRect(0, 0, cantonW, cantonH)
+
+  const cx = cantonW / 2, cy = cantonH / 2
+  const outerR = cantonH * 0.36, innerR = outerR * 0.42
+  ctx.fillStyle = '#ffffff'
+  ctx.beginPath()
+  for (let k = 0; k < 12; k++) {
+    const mid = (k / 12) * Math.PI * 2 - Math.PI / 2
+    const a0 = mid - Math.PI / 24, a1 = mid + Math.PI / 24
+    ctx.moveTo(cx + Math.cos(a0) * innerR, cy + Math.sin(a0) * innerR)
+    ctx.lineTo(cx + Math.cos(mid) * outerR, cy + Math.sin(mid) * outerR)
+    ctx.lineTo(cx + Math.cos(a1) * innerR, cy + Math.sin(a1) * innerR)
+  }
+  ctx.closePath()
+  ctx.fill()
+  ctx.beginPath()
+  ctx.arc(cx, cy, innerR, 0, Math.PI * 2)
+  ctx.fill()
+
+  const tex = new THREE.CanvasTexture(c)
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
 function buildWindVane(scene, x, z) {
   const g = new THREE.Group()
   g.position.set(x, terrainHeight(x, z), z)
@@ -740,7 +960,7 @@ function buildWindVane(scene, x, z) {
   flagGroup.position.y = 1.9
   const flag = new THREE.Mesh(
     new THREE.PlaneGeometry(0.6, 0.36, 5, 2),
-    new THREE.MeshStandardMaterial({ color: 0xd8432f, roughness: 0.8, side: THREE.DoubleSide })
+    new THREE.MeshStandardMaterial({ map: buildFlagTexture(), roughness: 0.8, side: THREE.DoubleSide })
   )
   flag.position.x = 0.32
   flag.castShadow = true

@@ -144,9 +144,11 @@ export class CameraRig {
 
   // 目前視線方向的單位向量（供瞄準/彈道使用）。自動疊加拉弓時的持續飄動（this.sway），
   // 所以蓄力中的預覽彈道、跟真正放箭當下算出來的方向，都會反映玩家有沒有成功用滑鼠抵銷飄動。
-  // extraYaw/extraPitch 可再疊加額外角度偏移，不會動到 this.yaw/this.pitch 本身
-  getAimDirection(target = new THREE.Vector3(), extraYaw = 0, extraPitch = 0) {
-    const yaw = this.yaw + this.sway.yaw + extraYaw, pitch = this.pitch + this.sway.pitch + extraPitch
+  // extraYaw/extraPitch 可再疊加額外角度偏移，不會動到 this.yaw/this.pitch 本身；
+  // swayScale 可縮放飄動的影響幅度（例如放箭瞬間想讓飄動的影響打折，見 main.js 的 fireUp()）
+  getAimDirection(target = new THREE.Vector3(), extraYaw = 0, extraPitch = 0, swayScale = 1) {
+    const yaw = this.yaw + this.sway.yaw * swayScale + extraYaw
+    const pitch = this.pitch + this.sway.pitch * swayScale + extraPitch
     return target.set(
       -Math.sin(yaw) * Math.cos(pitch),
       Math.sin(pitch),
