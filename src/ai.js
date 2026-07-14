@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { computeWorldCapsules, HIT_ZONES } from './hitzones.js'
-import { GRAVITY, SPEED_MIN, SPEED_MAX } from './arrow.js'
+import { GRAVITY, SPEED_MIN, SPEED_MAX, solveBallisticPitch } from './arrow.js'
 import { sfx } from './sfx.js'
 import { getActiveZombies } from './zombie.js'
 
@@ -33,17 +33,6 @@ function pickTargetZone(centerBias) {
 
 function randRange(a, b) { return a + Math.random() * (b - a) }
 
-// 解彈道仰角：給定水平距離/高度差/初速/重力(正值)，求命中目標點所需的發射角（取較平的那組解）
-// 距離超出這個初速能打到的範圍時回傳 null（AI 會退而求其次用直線瞄準，難度內可接受的失手）
-function solveBallisticPitch(dxz, dy, speed, g) {
-  if (dxz < 1e-4) return Math.PI / 2 * Math.sign(dy || 1)
-  const v2 = speed * speed
-  const disc = v2 * v2 - g * (g * dxz * dxz + 2 * dy * v2)
-  if (disc < 0) return null
-  const tanTheta = (v2 - Math.sqrt(disc)) / (g * dxz)
-  return Math.atan(tanTheta)
-}
-
 // AI 對手：狀態機 IDLE(待機)→DRAWING(鎖定目標蓄力)→COOLDOWN(出手後停頓)。
 // 跟玩家共用同一個 Archer 類別，中箭後的瞄準干擾/受傷反應完全對稱，這裡不用特別處理。
 export class AIController {
@@ -61,6 +50,8 @@ export class AIController {
     this.speed = SPEED_MIN
     this.hitChance = DEFAULT_HIT_CHANCE
     this.headshotThreat = false   // 這一箭是不是「真的瞄準」對手頭部的那一箭，給 main.js 判斷要不要觸發慢動作
+    this.headshotTriggerDist = 0   // 飛到離目標頭部還剩這麼多公尺（＝飛行距離過半那一刻）就觸發慢動作
+    this.headshotWatchPos = new THREE.Vector3()   // 慢動作觸發距離要拿箭矢位置跟這個點比對（目標頭部世界座標）
   }
 
   // 關卡切換時呼叫：更新這個 AI 對手的固定命中機率（0~1）
@@ -150,8 +141,12 @@ export class AIController {
     }
     dir.normalize()
     this.dir.copy(dir)
-    // 真的瞄準頭部、大概率會命中的那一箭，main.js 會在箭飛近玩家 5 公尺內時觸發慢動作
+    // 真的瞄準頭部、大概率會命中的那一箭，main.js 會在箭飛到半路時觸發慢動作；
+    // 用出手當下到目標頭部的直線距離算「半路」是多遠，而不是寫死固定公尺數，
+    // 這樣不管關卡把雙方距離拉多長，慢動作都固定在「飛行進度過半」的那一刻開始
     this.headshotThreat = isTrueAim && zoneName === 'head'
+    this.headshotTriggerDist = this.origin.distanceTo(targetPoint) / 2
+    this.headshotWatchPos.copy(targetPoint)
 
     this.chargeGoal = randRange(this.cfg.chargeMin, this.cfg.chargeMax)
     this.chargeT = 0
@@ -161,6 +156,8 @@ export class AIController {
   _release() {
     const arrow = this.arrowManager.spawn(this.origin.clone(), this.dir, this.speed, 'ai')
     arrow.headshotThreat = this.headshotThreat
+    arrow.headshotTriggerDist = this.headshotTriggerDist
+    arrow.headshotWatchPos = this.headshotWatchPos.clone()
     sfx.release()
     this.archer.setDrawPower(0)
     this.state = STATE.COOLDOWN

@@ -1,8 +1,8 @@
 import * as THREE from 'three'
 import { CameraRig } from './camera.js'
-import { ArrowManager, TrajectoryPreview, CHARGE_TIME, SPEED_MIN, SPEED_MAX, ARROW_RADIUS } from './arrow.js'
-import { Archer } from './archer.js'
-import { testArrowHit, TIER_AIM_NOISE } from './hitzones.js'
+import { ArrowManager, TrajectoryPreview, CHARGE_TIME, SPEED_MIN, SPEED_MAX, ARROW_RADIUS, predictArrowNearPoint, solveGuaranteedHitDirection } from './arrow.js'
+import { Archer, STANDING_HEAD_Y, ARCHER_SCALE } from './archer.js'
+import { testArrowHit, TIER_AIM_NOISE, computeWorldCapsules } from './hitzones.js'
 import { AIController } from './ai.js'
 import { initAudio, sfx, music } from './sfx.js'
 import { buildEnvironment, updateEnvironment, getPlatformSpots, pickGroundSpot, getTerrainHeightAt, isWaterAt, getObstacles, LEVEL_COUNT, getOpponentStandY, updateSpecialObstacle } from './scene.js'
@@ -40,7 +40,11 @@ function startingLevelFromUrl() {
 
 let currentLevel = startingLevelFromUrl()
 let DUEL_DISTANCE = levelDuelDistance(currentLevel)   // 雙方站位間距（公尺），隨關卡改變
-const EYE = new THREE.Vector3(0, 1.7, DUEL_DISTANCE / 2)   // 玩家眼睛位置（面向 -z），關卡切換時原地更新座標
+// 玩家眼睛位置（面向 -z），關卡切換時原地更新座標。高度用 STANDING_HEAD_Y（跟 archer.js
+// 角色模型的頭部命中球心同一個高度），不能亂填數字——填得跟角色模型對不上的話，第一人稱
+// 視角高度就會跟自己的頭部命中區脫節，看起來像是視角從胸口發出，AI 瞄準頭部射過來的箭
+// 軌跡看起來也會像瞄準胸口
+const EYE = new THREE.Vector3(0, STANDING_HEAD_Y, DUEL_DISTANCE / 2)
 
 // ---- 計分系統：每關依「玩家第幾箭把 AI 射死」給分，加上每打倒一位 AI 對手的固定獎勵分，
 //      累加成這次挑戰的總分，最佳關卡/最佳分數存進 localStorage（僅限這台裝置/這個瀏覽器）----
@@ -123,9 +127,9 @@ playerArcher.setFacing(0)
 const aiArcher = new Archer(0x8a2f2f, 'ai')            // 紅色皮衣（治安官風）
 aiArcher.setPosition(OPPONENT_POS.x, OPPONENT_POS.y, OPPONENT_POS.z)
 aiArcher.setFacing(Math.PI)   // 面向玩家
-aiArcher.root.scale.setScalar(1.8)
+aiArcher.root.scale.setScalar(ARCHER_SCALE)
 scene.add(aiArcher.root)
-playerArcher.root.scale.setScalar(1.8)
+playerArcher.root.scale.setScalar(ARCHER_SCALE)
 // 玩家模型仍要加入場景才會每幀更新世界矩陣（AI 瞄準需要讀取正確的部位座標），
 // 但 visible=false 讓它不會被渲染出來，避免第一人稱視角卡進自己身體
 scene.add(playerArcher.root)
@@ -145,22 +149,32 @@ let charging = false
 let chargeT = 0
 let currentDrawPower = 0   // 每幀更新，蓄力飄動時 fireUp() 要用「當下顯示的」蓄力，不能重算一次乾淨值
 
-// ---- 慢動作：AI 對手真的瞄準玩家頭部（幾乎會命中）的那一箭，飛到玩家 9 公尺內時放慢時間流速，
-//      讓玩家看得清楚箭的來向；只要有這樣的箭還在 9 公尺內就持續生效，箭一旦命中/插地/飛遠就
-//      解除，不是固定播放一段時間。timeScale 只套用在戰鬥相關的更新（箭矢/角色/殭屍/AI/攝影機
-//      飄動衰減），環境/風/日夜等背景系統維持正常速度，避免整個畫面看起來像卡格。
-//      箭速 26~52 m/s、原本 5 公尺+0.25 倍速幾乎一瞬間就飛完，慢動作根本來不及被感覺到，
-//      這裡把觸發距離拉遠到 9 公尺、時間流速也放慢到 0.15 倍，並加快趨近速度讓減速幾乎
-//      是觸發當下就到位，不是龜速淡入才慢下來 ----
-const SLOWMO_TRIGGER_DIST = 9
-const SLOWMO_TARGET_SCALE = 0.15
+// ---- 慢動作：任何一方真的會命中對方頭部的那一箭（不分玩家射 AI 還是 AI 射玩家），飛行距離
+//      過半時放慢時間流速，有點像薩爾達的時光模式，讓玩家可以仔細看箭飛向頭部的過程；只要
+//      有這樣的箭還在半路上就持續生效，箭一旦命中/插地/飛遠就解除，不是固定播放一段時間。
+//      用「飛行進度過半」（headshotTriggerDist，出手當下到目標頭部距離的一半）當觸發點，
+//      而不是寫死固定公尺數，才不會因為關卡把雙方距離拉長就變成太早或太晚觸發。
+//      AI 射玩家：headshotThreat 是 AI 拉弓當下就決定好的「這箭是不是真的瞄準頭部」（見
+//      ai.js _beginDraw()）。玩家射 AI：沒有這種預先決定的意圖，改成放箭當下往前模擬一次
+//      彈道（跟真正飛行同一套物理公式），看會不會飛過 AI 頭部附近（見 fireUp()/debugFireHeadshotAtAI()
+//      呼叫的 predictArrowNearPoint()）。timeScale 只套用在戰鬥相關的更新（箭矢/角色/殭屍/AI/
+//      攝影機飄動衰減），環境/風/日夜等背景系統維持正常速度，避免整個畫面看起來像卡格 ----
+const SLOWMO_TARGET_SCALE = 0.08   // 0.15 倍還是被反應說太快，改成接近定格的慢動作才夠戲劇性
 const SLOWMO_EASE_SPEED = 10   // 時間流速趨近目標值的平滑速度（越大切換越快）
+// 箭距離目標（攝影機/頭部命中區）小於這個距離時，提早解除慢動作、恢復正常速度：命中判定
+// 的容許範圍只有 0.21 公尺，箭要飛到幾乎貼著鏡頭那麼近才會判定命中，這麼近的距離下，路徑
+// 只要有一點點偏移，投影到畫面上的位置就會被透視關係放大成很誇張的跳動（很接近鏡頭的物體
+// 本來就是這樣，跟 EYE 高度沒關係）。這段本來因為飛得快，一閃即逝感覺不出來，慢動作把它拉長
+// 觀察反而讓這個透視假象變得很明顯（命中那一刻位置看起來偏高），所以最後這一小段乾脆用
+// 正常速度快速帶過，只有中段還在慢動作
+const SLOWMO_RESUME_DIST = 1.5
 let timeScale = 1
 function updateSlowMotion(rawDt) {
   let threatNear = false
   for (const a of arrowManager.arrows) {
-    if (a.ownerSide !== 'ai' || a.stuck || a.dead || !a.headshotThreat) continue
-    if (a.mesh.position.distanceTo(EYE) <= SLOWMO_TRIGGER_DIST) { threatNear = true; break }
+    if (a.stuck || a.dead || !a.headshotThreat) continue
+    const dist = a.mesh.position.distanceTo(a.headshotWatchPos)
+    if (dist <= a.headshotTriggerDist && dist > SLOWMO_RESUME_DIST) { threatNear = true; break }
   }
   const target = threatNear ? SLOWMO_TARGET_SCALE : 1
   timeScale += (target - timeScale) * Math.min(1, SLOWMO_EASE_SPEED * rawDt)
@@ -231,6 +245,7 @@ function cancelCharge() {
   cameraRig.stopSway()
 }
 
+const _aiHeadTmp = new THREE.Vector3()
 function fireUp() {
   if (!charging) return
   charging = false
@@ -245,12 +260,68 @@ function fireUp() {
   const dir = cameraRig.getAimDirection(undefined, 0, 0, RELEASE_SWAY_SCALE)
   cameraRig.stopSway()
   levelArrowCount++
-  const arrow = arrowManager.spawn(shotOrigin(), dir, speed, 'player')
+  const origin = shotOrigin()
+  const arrow = arrowManager.spawn(origin, dir, speed, 'player')
   arrow.shotNumber = levelArrowCount   // 這一關的第幾箭，命中/致命時算分要用
+  // 放箭當下先預判一次這箭會不會飛過 AI 頭部附近，會的話標記起來，main.js 主迴圈的
+  // updateSlowMotion() 才知道要在飛到半路時觸發慢動作——跟 AI 射玩家頭部共用同一套機制，
+  // 差別在玩家沒有 AI 那種拉弓當下就決定好的「意圖」，只能放箭當下往前模擬一次彈道
+  if (!aiArcher.dead) {
+    aiArcher.parts.head.origin.getWorldPosition(_aiHeadTmp)
+    if (predictArrowNearPoint(origin, dir, speed, _aiHeadTmp)) {
+      arrow.headshotThreat = true
+      arrow.headshotWatchPos = _aiHeadTmp.clone()
+      arrow.headshotTriggerDist = origin.distanceTo(_aiHeadTmp) / 2
+    }
+  }
   sfx.release()
   // 放箭後座力：把準星震開，逼玩家重新瞄準才能打下一箭，不能連續兩箭都用同一個準心點連發
   cameraRig.addAimNoise(FIRE_RECOIL_MIN + (FIRE_RECOIL_MAX - FIRE_RECOIL_MIN) * power)
 }
+
+// 頭部命中區是一段膠囊（neck 關節→頭頂偏移），不是一個點：archer.parts.head.origin 只是
+// 膠囊靠脖子那一端（跟胸口膠囊的頂端剛好貼在同一點，瞄準它常常會被誤判成打中胸口而不是
+// 頭），真正代表「頭部中心」的是膠囊兩端的中點——跟 ai.js _beginDraw() 算 AI 瞄準目標點用
+// 的是同一套算法（computeWorldCapsules）
+function headCapsuleMidpoint(archer, out) {
+  const cap = computeWorldCapsules(archer).find((c) => c.name === 'head')
+  return out.copy(cap.p0).add(cap.p1).multiplyScalar(0.5)
+}
+
+// 除錯用：不經過蓄力/瞄準，直接算出保證命中頭部的彈道發射一箭——用 solveGuaranteedHitDirection()
+// 疊代修正風的偏移（跟 fireUp() 那種只算重力、會被風吹偏的解不一樣，這裡要每次都真的中），
+// 方便快速測試頭部慢動作效果，不用靠手動瞄準碰運氣。debugFireHeadshotAtAI（按 T）＝玩家射中
+// AI 頭部；debugFireHeadshotAtPlayer（按 R）＝AI 射中玩家頭部，兩個方向都能單獨測試
+function debugFireHeadshotAtAI() {
+  if (!playing || paused || matchOver || aiArcher.dead) return
+  const origin = shotOrigin()
+  headCapsuleMidpoint(aiArcher, _aiHeadTmp)
+  const speed = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * 0.85
+  const dir = solveGuaranteedHitDirection(origin, _aiHeadTmp, speed)
+  levelArrowCount++
+  const arrow = arrowManager.spawn(origin, dir, speed, 'player')
+  arrow.shotNumber = levelArrowCount
+  arrow.headshotThreat = true
+  arrow.headshotWatchPos = _aiHeadTmp.clone()
+  arrow.headshotTriggerDist = origin.distanceTo(_aiHeadTmp) / 2
+  sfx.release()
+}
+
+const _playerHeadTmp = new THREE.Vector3()
+function debugFireHeadshotAtPlayer() {
+  if (!playing || paused || matchOver || playerArcher.dead) return
+  const origin = new THREE.Vector3()
+  aiArcher.parts.head.origin.getWorldPosition(origin)   // AI 射箭的出手位置固定用自己的頭部關節，跟 AIController._beginDraw() 一致
+  headCapsuleMidpoint(playerArcher, _playerHeadTmp)
+  const speed = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * 0.85
+  const dir = solveGuaranteedHitDirection(origin, _playerHeadTmp, speed)
+  const arrow = arrowManager.spawn(origin, dir, speed, 'ai')
+  arrow.headshotThreat = true
+  arrow.headshotWatchPos = _playerHeadTmp.clone()
+  arrow.headshotTriggerDist = origin.distanceTo(_playerHeadTmp) / 2
+  sfx.release()
+}
+
 canvas.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return
   if (!cameraRig.locked) {
@@ -534,7 +605,7 @@ function setupLevel(level) {
 
   PLAYER_POS.set(0, 0, DUEL_DISTANCE / 2)
   OPPONENT_POS.set(0, getOpponentStandY(), -DUEL_DISTANCE / 2)   // buildEnvironment() 剛跑完，這關的站台高度已經算好了
-  EYE.set(0, 1.7, DUEL_DISTANCE / 2)
+  EYE.set(0, STANDING_HEAD_Y, DUEL_DISTANCE / 2)
   playerArcher.setPosition(PLAYER_POS.x, PLAYER_POS.y, PLAYER_POS.z)
   aiArcher.setPosition(OPPONENT_POS.x, OPPONENT_POS.y, OPPONENT_POS.z)
   cameraRig.eye.copy(EYE)
@@ -771,6 +842,13 @@ window.addEventListener('keydown', (e) => {
   if ((e.key === 'g' || e.key === 'G') && playing) {
     const spot = pickGroundSpot(35, 35, true)
     if (spot) spawnZombie(scene, spot.x, spot.z, getTerrainHeightAt(spot.x, spot.z))
+  }
+  // 按 T 直接射一箭保證命中 AI 頭部，按 R 則讓 AI 射一箭保證命中玩家頭部，方便快速測試頭部慢動作效果
+  if ((e.key === 't' || e.key === 'T') && playing) {
+    debugFireHeadshotAtAI()
+  }
+  if ((e.key === 'r' || e.key === 'R') && playing) {
+    debugFireHeadshotAtPlayer()
   }
   // ESC 或空白鍵都可以從暫停畫面直接恢復（只有暫停選單本身顯示時才生效，設定子選單開著時不算）
   if ((e.key === 'Escape' || e.key === ' ') && paused && !pauseEl.classList.contains('hidden')) {

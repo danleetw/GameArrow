@@ -13,6 +13,131 @@ const FLIGHT_TIMEOUT = 6      // 飛太久（脫靶飛出場外）強制清除
 const STUCK_LIFETIME = 10     // 插地/插人後停留幾秒再清除
 const MAX_ARROWS = 40         // 場上箭矢上限，超過時清最舊的已插地箭
 
+// 解彈道仰角：給定水平距離/高度差/初速/重力(正值)，求命中目標點所需的發射角（取較平的那組解）。
+// 只算重力，不管風——AI 瞄準跟除錯用的「保證命中」解都拿這個當初始猜測，後者還會再疊代修正風的偏移。
+// 距離超出這個初速能打到的範圍時回傳 null（呼叫端退而求其次用直線瞄準）
+export function solveBallisticPitch(dxz, dy, speed, g) {
+  if (dxz < 1e-4) return Math.PI / 2 * Math.sign(dy || 1)
+  const v2 = speed * speed
+  const disc = v2 * v2 - g * (g * dxz * dxz + 2 * dy * v2)
+  if (disc < 0) return null
+  const tanTheta = (v2 - Math.sqrt(disc)) / (g * dxz)
+  return Math.atan(tanTheta)
+}
+
+// ---- 頭部命中預判：放箭當下（不是每幀）往前模擬一次跟 Arrow.update() 完全同一套物理
+//      公式（風+重力），檢查彈道會不會經過目標頭部附近，用來標記「這箭大概會爆頭」，
+//      main.js 拿這個標記決定要不要觸發慢動作。純粹預判用，不影響真正的碰撞判定 ----
+const HEADSHOT_PREDICT_RADIUS = 0.24   // 頭部命中區半徑 0.15（見 hitzones.js HIT_ZONES.head）+ 箭矢半徑，抓寬鬆一點
+const HEADSHOT_PREDICT_STEP = 0.03
+const _predictWind = new THREE.Vector3()
+
+// 模擬一次完整彈道（風+重力），回傳整趟飛行途中離 targetPos 最近的那個點跟距離——
+// 不是只看有沒有命中，而是量測「差多少」，給疊代修正瞄準方向用
+function simulateClosestApproach(origin, dir, speed, targetPos) {
+  const v = dir.clone().normalize().multiplyScalar(speed)
+  const p = origin.clone()
+  let bestDist = origin.distanceTo(targetPos)
+  const bestPoint = origin.clone()
+  const maxSteps = Math.ceil(FLIGHT_TIMEOUT / HEADSHOT_PREDICT_STEP)
+  for (let i = 0; i < maxSteps; i++) {
+    const wind = getWindVector(_predictWind)
+    v.x += wind.x * WIND_ACCEL * HEADSHOT_PREDICT_STEP
+    v.z += wind.z * WIND_ACCEL * HEADSHOT_PREDICT_STEP
+    v.y += GRAVITY * HEADSHOT_PREDICT_STEP
+    p.addScaledVector(v, HEADSHOT_PREDICT_STEP)
+    const d = p.distanceTo(targetPos)
+    if (d < bestDist) { bestDist = d; bestPoint.copy(p) }
+    if (p.y <= GROUND_Y) break
+  }
+  return { point: bestPoint, dist: bestDist }
+}
+
+export function predictArrowNearPoint(origin, dir, speed, targetPos, radius = HEADSHOT_PREDICT_RADIUS) {
+  return simulateClosestApproach(origin, dir, speed, targetPos).dist <= radius
+}
+
+// 把瞄準方向拆成「仰角 pitch（沿 flatDir/世界 Y 平面）」+「側向偏角 yawOff（繞 Y 軸偏離
+// flatDir 的角度，修正風的側向分量用）」，組回實際發射方向
+function _headshotDirFromAngles(flatDir, perpDir, pitch, yawOff) {
+  const flat2 = flatDir.clone().multiplyScalar(Math.cos(yawOff)).addScaledVector(perpDir, Math.sin(yawOff))
+  return flat2.multiplyScalar(Math.cos(pitch)).setY(Math.sin(pitch)).normalize()
+}
+
+// 模擬到「沿 flatDir 方向的水平前進量」達到 dxz 那一刻，內插算出當下的高度跟側向偏移（垂直
+// flatDir 的分量）。一定要用內插，不能只抓離散取樣點裡最接近的一個——箭矢用固定步長模擬，
+// 剛好命中的那個瞬間幾乎不會精準落在某個取樣點上，取樣點跟目標水平距離的落差本身就會造成
+// 看起來「沒命中」的誤差，但那只是取樣間隔造成的假象，不是瞄準真的偏了
+function _headshotStateAtRange(origin, dir, speed, flatDir, perpDir, dxz) {
+  const v = dir.clone().normalize().multiplyScalar(speed)
+  const p = origin.clone()
+  const prevP = origin.clone()
+  let prevProg = 0
+  const maxSteps = Math.ceil(FLIGHT_TIMEOUT / HEADSHOT_PREDICT_STEP)
+  for (let i = 0; i < maxSteps; i++) {
+    const wind = getWindVector(_predictWind)
+    v.x += wind.x * WIND_ACCEL * HEADSHOT_PREDICT_STEP
+    v.z += wind.z * WIND_ACCEL * HEADSHOT_PREDICT_STEP
+    v.y += GRAVITY * HEADSHOT_PREDICT_STEP
+    prevP.copy(p)
+    p.addScaledVector(v, HEADSHOT_PREDICT_STEP)
+    const prog = (p.x - origin.x) * flatDir.x + (p.z - origin.z) * flatDir.z
+    if (prog >= dxz) {
+      const t = (dxz - prevProg) / (prog - prevProg)
+      const y = prevP.y + (p.y - prevP.y) * t
+      const ix = prevP.x + (p.x - prevP.x) * t - origin.x
+      const iz = prevP.z + (p.z - prevP.z) * t - origin.z
+      return { y, lateral: ix * perpDir.x + iz * perpDir.z }
+    }
+    prevProg = prog
+    if (p.y <= GROUND_Y) return null
+  }
+  return null
+}
+
+// 除錯用：解出一個「保證命中」targetPos 的瞄準方向。solveBallisticPitch() 只算重力，沒算風，
+// 風大的時候箭會側向飄走、單靠那組解常常會偏出頭部判定半徑；這裡先用那組解當仰角的初始猜測，
+// 再用有限差分（微調角度、量測落點怎麼變、算出真正的敏感度）疊代修正仰角（對高度）跟側向
+// 偏角（對風造成的側向偏移），量測基準是「水平前進量到達目標距離那一刻」內插出來的精確位置，
+// 不是找一堆離散取樣點裡最近的那個，收斂得又快又準。一般 AI 瞄準/玩家操控都不會用到這個——
+// 那兩者都該受風力影響、也該有失手的可能，只有測試用的快捷鍵需要「無視風力，保證命中」
+export function solveGuaranteedHitDirection(origin, targetPos, speed) {
+  const dxz = Math.hypot(targetPos.x - origin.x, targetPos.z - origin.z)
+  const dy = targetPos.y - origin.y
+  const flatDir = new THREE.Vector3(targetPos.x - origin.x, 0, targetPos.z - origin.z).normalize()
+  const perpDir = new THREE.Vector3(-flatDir.z, 0, flatDir.x)
+  const pitch0 = solveBallisticPitch(dxz, dy, speed, -GRAVITY)
+  if (pitch0 === null) return targetPos.clone().sub(origin).normalize()
+
+  let pitch = pitch0
+  let yawOff = 0
+  const ANGLE_STEP = 0.005   // 有限差分量測敏感度用的微小角度（弧度）
+  for (let round = 0; round < 3; round++) {
+    for (let i = 0; i < 3; i++) {
+      const s0 = _headshotStateAtRange(origin, _headshotDirFromAngles(flatDir, perpDir, pitch, yawOff), speed, flatDir, perpDir, dxz)
+      if (!s0) { pitch += 0.05; continue }
+      const missY = targetPos.y - s0.y
+      if (Math.abs(missY) < 0.005) break
+      const s1 = _headshotStateAtRange(origin, _headshotDirFromAngles(flatDir, perpDir, pitch + ANGLE_STEP, yawOff), speed, flatDir, perpDir, dxz)
+      if (!s1) break
+      const sens = (s1.y - s0.y) / ANGLE_STEP
+      if (Math.abs(sens) < 1e-6) break
+      pitch += missY / sens
+    }
+    for (let i = 0; i < 3; i++) {
+      const s0 = _headshotStateAtRange(origin, _headshotDirFromAngles(flatDir, perpDir, pitch, yawOff), speed, flatDir, perpDir, dxz)
+      if (!s0) break
+      if (Math.abs(s0.lateral) < 0.005) break
+      const s1 = _headshotStateAtRange(origin, _headshotDirFromAngles(flatDir, perpDir, pitch, yawOff + ANGLE_STEP), speed, flatDir, perpDir, dxz)
+      if (!s1) break
+      const sens = (s1.lateral - s0.lateral) / ANGLE_STEP
+      if (Math.abs(sens) < 1e-6) break
+      yawOff += -s0.lateral / sens
+    }
+  }
+  return _headshotDirFromAngles(flatDir, perpDir, pitch, yawOff)
+}
+
 // 查詢 (x,z) 正下方有沒有看台之類的檯面，有的話回傳它（含 surfaceY 頂面高度），
 // 讓箭矢落地判定除了走廊地面外也認得這些額外的立體物件，不會直接穿過去
 function findPlatformUnder(x, z) {

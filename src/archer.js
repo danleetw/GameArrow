@@ -10,6 +10,18 @@ import { HIT_ZONES } from './hitzones.js'
 
 const SKIN = 0xd9a878
 
+// main.js 會把整個角色 root 放大 ARCHER_SCALE 倍（讓角色在場上看起來夠大），所有關節的
+// 局部座標最後都要乘上這個倍率才是真正的世界座標高度——下面 STANDING_HEAD_Y 算的就是縮放
+// 後的頭部世界高度，main.js 的玩家攝影機高度（EYE.y）要對齊這個值，不然第一人稱視角高度會
+// 跟角色模型自己的頭部命中區對不上：玩家會覺得自己的視角是從胸口/脖子發出的，AI 瞄準
+// 「頭部」射過來的箭看起來也會像瞄準胸口。main.js 設定 root.scale 時也要用同一個
+// ARCHER_SCALE 常數，不能各寫各的數字，不然兩邊遲早會兜不起來
+export const ARCHER_SCALE = 1.8
+export const PELVIS_Y = 0.9
+const NECK_OFFSET_Y = 0.5
+const HEAD_OFFSET_Y = 0.18
+export const STANDING_HEAD_Y = (PELVIS_Y + NECK_OFFSET_Y + HEAD_OFFSET_Y) * ARCHER_SCALE
+
 // 弓：用明確的曲線控制點畫出弓臂，握把處往 -Z（前方/目標方向）凸出、
 // 上下弓端往 +Z（archer 自己這一側）收，讓彎曲的地方朝前，弦則在 +Z 那一側。
 // 弓弦依蓄力往 +Z（archer 方向）拉開。掛在持弓手（左手腕）上。
@@ -176,12 +188,12 @@ export class Archer {
     this.root = new THREE.Group()
 
     // ---- 軀幹 ----
-    const pelvis = joint(this.root, 0, 0.9, 0)
+    const pelvis = joint(this.root, 0, PELVIS_Y, 0)
     this.pelvis = pelvis
-    this._zone('chest', pelvis, new THREE.Vector3(0, 0.5, 0), teamColor)
-    const neck = joint(pelvis, 0, 0.5, 0)
+    this._zone('chest', pelvis, new THREE.Vector3(0, NECK_OFFSET_Y, 0), teamColor)
+    const neck = joint(pelvis, 0, NECK_OFFSET_Y, 0)
     this.neck = neck
-    const headOffset = new THREE.Vector3(0, 0.18, 0)
+    const headOffset = new THREE.Vector3(0, HEAD_OFFSET_Y, 0)
     this._zone('head', neck, headOffset, SKIN, true)
     this._buildFace(neck, headOffset, HIT_ZONES.head.radius)
 
